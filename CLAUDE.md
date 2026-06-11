@@ -1,0 +1,72 @@
+# CLAUDE.md
+
+This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+
+## 项目定位
+
+livecaption 是 macOS（Apple Silicon）本地实时英文转录 + 中文翻译的命令行工具，无 UI。ASR 用 mlx-audio 跑 NVIDIA `nemotron-3.5-asr-streaming-0.6b`（cache-aware 真流式 transducer），端点检测用 Silero VAD（mlx 版）；翻译用 mlx-lm 跑腾讯混元 `Hy-MT2`。两者都走 Apple GPU/MLX、共享统一内存——VAD 把静音段挡在 encoder 外省 GPU。**全进程 mx 求值都过 `runtime.MLX_LOCK` 串行化**（MLX 多线程并发求值无官方保证）：ASR 侧整段计算持锁（毫秒级），翻译侧用 `stream_generate` 逐 decode step 取锁——既保证线程安全，又不让一次翻译把 partial 冻住数秒。
+
+## 常用命令
+
+```bash
+uv sync                                      # 装依赖
+uv run livecaption --source mic|system|both  # 运行；首次自动下载模型（ASR ~1.2GB + VAD + 说话人分离 ~225MB + 翻译 ~2GB）
+uv run livecaption --source file --file x.wav --out y.md  # 转录音频文件，跑完即退出（全流程端到端测试入口）
+uv run livecaption --list-devices            # 列出麦克风设备
+bash scripts/build_audiotee.sh               # 编译系统音频捕获二进制（仅 system/both 需要）
+
+# 验证：本项目无正式测试框架，用这些手动冒烟脚本
+uv run python scripts/smoke_asr.py           # ASR 端到端：加载模型 + 解码自带 test wav，对照离线结果
+uv run python scripts/smoke_translate.py     # 翻译端到端
+uv run python scripts/smoke_diff.py          # _inline_diff 纯逻辑测试（无模型，秒级）
+uv run python scripts/smoke_mel.py           # 增量 mel 与整句一次性计算的一致性（改 _mel_grow 后必跑）
+uv run python scripts/diag_system_audio.py   # 系统音频 / 权限自检（播放声音看能否捕获到非零数据）
+uvx ruff check .                             # lint（规则集见 pyproject）
+```
+
+## 架构：三阶段线程流水线
+
+音频从采集到上屏经过三个用队列解耦的线程：
+
+```
+AudioSource(后台)  ──queue──▶  AsrWorker(线程)  ──final 句──▶  Translator(线程)  ──▶  Renderer / FileWriter
+ mic: sounddevice 回调           mlx-audio nemotron-3.5         mlx-lm + Hy-MT2
+ system: audiotee 子进程         + Silero VAD 端点切句
+                                 partial / final 双事件
+```
+
+- **`audio.py`** — `MicSource`(sounddevice 回调)、`SystemAudioSource`(读 audiotee 子进程 stdout)、`FileSource`(解码音频文件)，统一把 16k float32 mono chunk 放进 `self.queue`，流结束放 `SENTINEL`。实时源绝不阻塞（队列满了丢帧）；**FileSource 例外：阻塞 put 不丢帧**（无实时性约束，端点检测数 VAD 帧不依赖墙钟）。
+- **`asr.py`** — `Recognizer`(共享权重) + `OnlineStream`(单流状态机：Silero VAD 判开口/静音，push 式增量 encoder + RNNT 解码) + `AsrWorker`(消费队列、把事件转回调)。发两种事件：`on_partial`(中间结果，随说话变) 和 `on_final`(端点后定稿)。diarize（默认开）时一句可能切成多个 final（每说话人一段），label 带 `#S1` 后缀。
+- **`translate.py`** — `Translator` 后台加载 Hy-MT2，**只翻译 final 句**。翻译堵塞绝不反压音频（积压 ≥10 句时向 stderr 告警一次）。`context_size>0` 时用最近 N 句原文做翻译背景。生成用 `stream_generate` 手动驱动、每个 decode step 取一次 `runtime.MLX_LOCK`。模型加载失败会打印 "translation disabled" 并退出线程，转录照常。
+- **`runtime.py`** — 进程级 `MLX_LOCK`（中立归属，asr 和 translate 都 import 它，谁也不依赖谁）。
+- **`render.py`** — `Renderer`(rich.Live 终端，底部活动区刷 partial、上方滚动 final) + `FileWriter`(追加写文件)。配色按 `--theme`(auto/light/dark) 分三套：单套固定色总会在某种背景下隐身，所以**只有译文真正随背景变**(default=默认前景+加粗"不赌颜色"，dark=亮青，light=深青蓝)，其余元素用对两种背景都中性可见的固定样式(grey50 中灰、说话人调色板)——**一律不用 `dim`**(dim 相对背景降亮度，两种背景都偏淡，正是用户反馈"看不清"的根因)。说话人 S1–S4 各一色(`_SPEAKER_PALETTE`，按主题分套且刻意避开青系以防与译文撞色)。auto 从 `COLORFGBG` 末段探测背景，探测不到回退 default。
+- **`cli.py`** — 装配层：解析参数 → 建音频源 → 每个源一个 recognizer + AsrWorker → 回调接到 renderer/writer/translator → 等 Ctrl-C。
+- **`config.py`** — 所有可调参数集中在此（端点 rule、采样参数、上下文句数、prompt 模版）。
+- **`models.py`** — 模型下载/文件解析、audiotee 二进制定位。
+
+### 关键设计决策（动代码前必读）
+
+- **只翻 final 不翻 partial**：partial 反复变，翻它浪费算力且闪烁；句子级翻译质量更好。改这个会破坏整个延迟/质量平衡。
+- **two-pass 纠偏**：partial 用流式小 look-ahead（`ASR_ATT_CONTEXT=[56,6]`，560ms 延迟）求快；定稿时用 `ASR_FINAL_ATT_CONTEXT=[56,13]`（官方最高精度档）整句重解，final 和翻译输入用重解版（`asr._second_pass`）。token 一旦吐出流式端不回改——纠偏只发生在 final 这一步。有纠正时 final 事件带 `_inline_diff` 的 spans，终端在 final 行内渲染（纠掉的词红色删除线、新词绿色，`--no-diff` 关）；文件和翻译永远用干净的纠正后文本。
+- **时间戳 = 句子开始时刻**：`started_at` 在一句话第一个非空 partial 出现时记录（`asr.py`），partial 与 final 共用同一个值，所以两个回调都带它。diarize 把一句切成多段 final 时，第二段起按段首 token 的 80ms 时间戳从锚点推算各自的开始时刻（事件 5 元组的 offset 字段，None=锚点段）。renderer 里**不要**用 `datetime.now()`。
+- **回调签名是贯穿三层的契约**：`on_partial(label, text, started_at)` / `on_final(label, text, started_at, diff=None)`（diff 是 two-pass 纠正的 inline spans，只有 renderer 消费；writer/translator 永远拿干净文本）；翻译侧是 `Translator.submit(label, text, started_at)` → `on_translation(label, src, zh, started_at)`（started_at 透传，输出端用它把译文挂回原文——翻译落后时 ZH 行会插在后续 EN 行之后）。改签名必须同步改 asr/translate → cli(`handle_*`) → render，否则运行时 TypeError（import 检查抓不到）。
+- **both 模式 = 一份共享 Recognizer 权重 + 每源一个 OnlineStream/AsrWorker，共享一个 translator/renderer/writer**。每源用 `label`("me"/"them") 区分，label 用作 `_partials` 字典 key 和文件记录，但终端不显示。
+- **push 式 stepper 是手工移植的**：mlx-audio 只有 pull 式接口（整段音频进 generator 出），`asr._StreamingEncoder` 把它的 `stream_encode` 簿记逐行改写成 push 式。改这块前先读 mlx-audio 的 `stt/models/nemotron_asr/streaming.py` 原文对照。
+
+## 非显而易见的约束（都是踩过的坑）
+
+- **mlx-audio 必须 pin `>=0.4.4,<0.5`**：`asr.py` import 了它的内部实现（`streaming._stream_block`、`_PRE_ENCODE_MEL_CACHE`、alignment/tokenizer 工具），minor 升级可能改内部结构。升级前先跑 `scripts/smoke_asr.py`（它会对照离线 `generate` 验证流式结果一致）。
+- **非 final 时 mel 尾部要扣留 `_MEL_HOLDBACK` 帧**：STFT center-padding 让缓冲区末尾约 2 帧 mel 的值还会随后续音频改变，提前喂进 encoder 会与离线结果产生分歧。final flush 时才全部喂完。mel 是增量维护的（`_mel_grow`：稳定前缀缓存 + 只重算尾部，避免持锁热路径上 O(n²) 重算），改它必跑 `scripts/smoke_mel.py`。
+- **线程失败路径有三道防线，别拆**：(1) `AsrWorker` 异常会打 traceback 并回调 `on_error`（cli 接到 `stop_event.set`，让流水线优雅退出而不是假活）；(2) 音频源的 SENTINEL 一律走 `_put_sentinel` 非阻塞入队（消费者死了 + 队列满时，阻塞 put 会卡死清理路径）；(3) 第一次 Ctrl-C 优雅停，第二次恢复默认 handler 强制退出；`FileWriter` 对 close 后的迟到写入静默丢弃。
+- **端点检测三条 rule 单位都是秒（不是帧）**，OR 关系，基于 Silero VAD 的 32ms 帧语音概率实现。rule1（无文本超时）只重置不出 final；`RULE3_MIN_UTTERANCE_LENGTH` 是"一句最长多少秒强制切"。
+- **ASR 语言默认 `"en-US"`，`--asr-lang` 可换（40 个 locale，传错会列出全部），但别默认 `"auto"`**：auto 让模型自检语言，会议中英混杂时输出语言会跳变。模型对不认识的 key 会静默回退默认语言，所以 `Recognizer` 里做了显式校验。
+- **Sortformer 不要小块流式喂**：这个 checkpoint 的原生工作点是 `chunk_len=188`（15 秒/块），喂 0.6~1.3s 小块会让说话人身份漂移（实测凭空多出说话人）。正确用法是定稿时整句一次 `feed`（state 跨句携带保证编号稳定），partial 的临时标签用只读 peek（state 不持久化，避免定稿 feed 重复消费音频）。
+- **说话人切分是定稿时才发生的**：两人无缝接话（间隙 <1.2s）会先合在一个 utterance 里（partial 显示混合文本），到静音端点/20s 上限才按 token 时间戳切开出多个 final。换人间隙 >1.2s 时 rule2 自然先切，无此问题。
+- **token 时间戳与 diar 帧同为 80ms 粒度同一时间轴**，直接对位；换人边界的句尾标点按时间戳会落进下一组，`_attribute_speakers` 里有回挂后处理。
+- **系统音频全静音 = TCC 权限问题，不是 bug**。audiotee 裸二进制经子进程启动，macOS 几乎不弹授权窗；没授权时 Core Audio **静默返回静音流**（有字节、全 0、不报错）。`SystemAudioSource` 连续约 8 秒全 0 会打印警告。解法见 README 权限一节（手动授权 + 重启终端）。
+- **audiotee 需从源码编译**（Swift，无 brew/无预编译）。`scripts/build_audiotee.sh` 克隆 + `swift build` 到 `./bin/audiotee`；`models.resolve_audiotee` 按 显式路径 > `./bin` > PATH 查找。
+
+## 约定
+
+- **运行时面向用户的文案用英文**（console 输出、CLI `--help`、异常消息、脚本 print）；**代码注释和 docstring 也用英文**（2026-06 起为面向国际开源从中文改为英文；本 `CLAUDE.md` 作为内部开发指导保留中文，README 为中文主版 + `README.en.md` 英文版）。
+- **翻译 prompt 完全遵循 Hy-MT2 官方 README 模版**（`config.py` 的 `TRANSLATE_PROMPT` / `TRANSLATE_PROMPT_WITH_CONTEXT`），不要自创加约束；采样参数也是官方推荐值，勿随意改。带上下文时前文用**空格**拼接（不是换行），因为端点切出的"句子"常是连续语流的片段。

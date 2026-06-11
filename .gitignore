@@ -1,0 +1,14 @@
+# Python-generated files
+__pycache__/
+*.py[oc]
+build/
+dist/
+wheels/
+*.egg-info
+
+# Virtual environments
+.venv
+
+# audiotee 编译产物（用 scripts/build_audiotee.sh 重建）
+bin/
+.vendor/
