@@ -237,9 +237,11 @@ class SystemAudioSource(AudioSource):
                         print(
                             "\n[warn] Captured ~8s of system audio but it is all silence. "
                             "If sound is actually playing, the terminal app almost certainly "
-                            "lacks Screen & System Audio Recording permission. Grant it under "
-                            "System Settings > Privacy & Security > Screen & System Audio "
-                            "Recording, then fully quit and restart the terminal. See README.",
+                            "lacks System Audio Recording permission. Grant it under System "
+                            "Settings > Privacy & Security > Screen & System Audio Recording: "
+                            "on macOS 15+ scroll to the 'System Audio Recording Only' "
+                            "sub-section (NOT the top one) and add your terminal, then fully "
+                            "quit and restart it. See README.",
                             file=sys.stderr,
                         )
             self._offer(pcm.astype(np.float32) / 32768.0)

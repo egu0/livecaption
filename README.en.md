@@ -82,9 +82,11 @@ In the terminal: the gray line at the bottom is the live intermediate result; fi
 - **System audio (important)**: audiotee is a bare binary launched through a Python subprocess, so macOS's permission prompt **often does not appear**. If running `--source system` shows "listening" but produces no transcription at all (the program prints a silence warning after about 8 seconds), it's almost certainly that the "Screen & System Audio Recording" permission hasn't been granted—without permission, Core Audio silently returns a silent stream, with no error and no prompt. To grant it manually:
 
   1. Open **System Settings > Privacy & Security > Screen & System Audio Recording**
-  2. Add the terminal app you run this tool from (Terminal / iTerm / VS Code, etc.) to the list and toggle it on; if it isn't in the list, click `+` to add it manually (e.g. `/System/Applications/Utilities/Terminal.app`)
+  2. **On macOS 15 (Sequoia) and later this pane has two sub-sections**: scroll down to the **"System Audio Recording Only"** sub-section (**not** the top "Screen & System Audio Recording" one) and add the terminal app you run this tool from (Terminal / iTerm / VS Code, etc.), then toggle it on; if it isn't listed, click `+` to add it manually (e.g. `/System/Applications/Utilities/Terminal.app`). audiotee only taps audio (no screen capture), so **the wrong sub-section still yields all-silence**. (macOS 14 has a single list with no such split.)
   3. **Fully quit and restart that terminal app** (TCC permission changes only take effect after the process restarts), then run again
   4. If it still doesn't work, try running once from macOS's built-in Terminal.app (rather than iTerm/VS Code's terminal)—it's more likely to trigger the authorization prompt
+
+  > The two-sub-section detail isn't in audiotee's own README; it comes from the author's reply in [audiotee#7](https://github.com/makeusabrew/audiotee/issues/7).
 
   To verify the permission is in effect: play any sound, run `uv run python scripts/diag_system_audio.py`, and check whether `max |amplitude|` is > 0.
 

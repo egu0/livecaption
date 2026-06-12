@@ -31,4 +31,6 @@ echo "==> Done: $BIN_DIR/audiotee"
 echo
 echo "On first use of the system source, macOS may prompt for 'Screen & System Audio"
 echo "Recording' permission for your terminal app. If no prompt appears, grant it"
-echo "manually in System Settings and restart the terminal. See README."
+echo "manually: System Settings > Privacy & Security > Screen & System Audio Recording."
+echo "On macOS 15+ use the 'System Audio Recording Only' sub-section (NOT the top one),"
+echo "then fully quit and restart the terminal. See README."

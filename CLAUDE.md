@@ -63,7 +63,7 @@ AudioSource(后台)  ──queue──▶  AsrWorker(线程)  ──final 句─
 - **Sortformer 不要小块流式喂**：这个 checkpoint 的原生工作点是 `chunk_len=188`（15 秒/块），喂 0.6~1.3s 小块会让说话人身份漂移（实测凭空多出说话人）。正确用法是定稿时整句一次 `feed`（state 跨句携带保证编号稳定），partial 的临时标签用只读 peek（state 不持久化，避免定稿 feed 重复消费音频）。
 - **说话人切分是定稿时才发生的**：两人无缝接话（间隙 <1.2s）会先合在一个 utterance 里（partial 显示混合文本），到静音端点/20s 上限才按 token 时间戳切开出多个 final。换人间隙 >1.2s 时 rule2 自然先切，无此问题。
 - **token 时间戳与 diar 帧同为 80ms 粒度同一时间轴**，直接对位；换人边界的句尾标点按时间戳会落进下一组，`_attribute_speakers` 里有回挂后处理。
-- **系统音频全静音 = TCC 权限问题，不是 bug**。audiotee 裸二进制经子进程启动，macOS 几乎不弹授权窗；没授权时 Core Audio **静默返回静音流**（有字节、全 0、不报错）。`SystemAudioSource` 连续约 8 秒全 0 会打印警告。解法见 README 权限一节（手动授权 + 重启终端）。
+- **系统音频全静音 = TCC 权限问题，不是 bug**。audiotee 裸二进制经子进程启动，macOS 几乎不弹授权窗；没授权时 Core Audio **静默返回静音流**（有字节、全 0、不报错）。`SystemAudioSource` 连续约 8 秒全 0 会打印警告。解法见 README 权限一节（手动授权 + 重启终端）。**macOS 15 (Sequoia) 起「屏幕与系统录制」分上下两子区**：audiotee 只做音频 tap，必须加到下方 **「仅系统音频录制」(System Audio Recording Only)** 子区，加到顶部那个子区会照样全 0 静音（macOS 14 单列表无此区分）——此细节 audiotee README 没写，出处是作者在 [audiotee#7](https://github.com/makeusabrew/audiotee/issues/7) 的回复。
 - **audiotee 需从源码编译**（Swift，无 brew/无预编译）。`scripts/build_audiotee.sh` 克隆 + `swift build` 到 `./bin/audiotee`；`models.resolve_audiotee` 按 显式路径 > `./bin` > PATH 查找。
 
 ## 约定

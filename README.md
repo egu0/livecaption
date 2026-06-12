@@ -82,9 +82,11 @@ uv run livecaption --source mic --mem
 - **系统音频（重要）**：audiotee 是裸二进制、又经 Python 子进程启动，macOS 的授权弹窗**经常不出现**。如果跑 `--source system` 看到「正在监听」却完全没有转录（约 8 秒后程序会打印静音警告），几乎可以肯定是「屏幕与系统录制」权限没给——Core Audio 在无权限时会静默返回静音流，不报错也不弹窗。手动授权：
 
   1. 打开 **系统设置 > 隐私与安全性 > 屏幕与系统录制**
-  2. 把运行本工具的终端 App（Terminal / iTerm / VS Code 等）加进列表并打开开关；列表里没有就点 `+` 手动添加（如 `/System/Applications/Utilities/Terminal.app`）
+  2. **macOS 15（Sequoia）及以上这一栏分上下两个子区**：往下滚到 **「仅系统音频录制」(System Audio Recording Only)** 子区——**不是**顶部那个「屏幕与系统录制」子区——把运行本工具的终端 App（Terminal / iTerm / VS Code 等）加进去并打开开关；没有就点 `+` 手动添加（如 `/System/Applications/Utilities/Terminal.app`）。audiotee 只做音频 tap、不录屏，**加错子区会照样全 0 静音**。（macOS 14 只有单一列表，无此区分。）
   3. **完全退出并重启该终端 App**（TCC 权限变更必须重启进程才生效），然后重跑
   4. 仍不行就先用 macOS 自带的 Terminal.app（而非 iTerm/VS Code 终端）跑一次，它更容易触发授权弹窗
+
+  > 「上下两个子区」这个细节连 audiotee 自己的 README 都没写，只见于作者在 [audiotee#7](https://github.com/makeusabrew/audiotee/issues/7) 的回复。
 
   验证权限是否生效：播放任意声音，跑 `uv run python scripts/diag_system_audio.py`，看 `max |amplitude|` 是否 > 0。
 

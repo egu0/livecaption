@@ -50,6 +50,7 @@ print(f"captured ~{total / 2 / 16000:.1f}s, max |amplitude| = {maxamp}/32768")
 print(
     "OK: system audio captured, permission works"
     if maxamp > 0
-    else "FAIL: all silence — Screen & System Audio Recording permission likely missing, "
-    "see README"
+    else "FAIL: all silence — System Audio Recording permission likely missing. "
+    "On macOS 15+ add your terminal to the 'System Audio Recording Only' sub-section "
+    "(NOT the top one) under Privacy & Security > Screen & System Audio Recording. See README."
 )
