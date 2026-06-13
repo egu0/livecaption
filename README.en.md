@@ -52,10 +52,10 @@ uv run livecaption --source system --context 0
 uv run livecaption --source mic --no-translate
 
 # Translate to Japanese, switch to a larger translation model
-uv run livecaption --target-lang Japanese --mt-model mlx-community/Hy-MT2-7B-4bit
+uv run livecaption --target-lang ja-jp --mt-model mlx-community/Hy-MT2-7B-4bit
 
 # Non-English meeting: specify the spoken language (40 locales; an invalid value lists all options)
-uv run livecaption --asr-lang de-DE --target-lang Chinese
+uv run livecaption --asr-lang de-de --target-lang zh-cn
 
 # Capture a single app only (first get Zoom's PID via `ps` / Activity Monitor)
 uv run livecaption --source system --include-pid 12345
@@ -92,7 +92,7 @@ In the terminal: the gray line at the bottom is the live intermediate result; fi
 
 ## Design Rationale
 
-`nemotron-3.5-asr-streaming` is the official multilingual successor to `nemotron-speech-streaming-en` (likewise a cache-aware, truly streaming model, with the same 0.6B parameter budget), not an offline model simulated via a sliding window. mlx-audio was chosen as the runtime: MLX runs natively on the Apple GPU (sherpa-onnx is CPU-only on Mac, and CoreML's operator coverage for streaming transducers is incomplete). mlx-audio only offers a pull-style interface, so this project rewrote its streaming core into a push-style real-time stepper (`asr.py`), and endpointing is reimplemented on top of Silero VAD following sherpa's rule1/2/3 semantics. The language is pinned to `en-US` to avoid auto-detection jumping around in mixed-language speech.
+`nemotron-3.5-asr-streaming` is the official multilingual successor to `nemotron-speech-streaming-en` (likewise a cache-aware, truly streaming model, with the same 0.6B parameter budget), not an offline model simulated via a sliding window. mlx-audio was chosen as the runtime: MLX runs natively on the Apple GPU (sherpa-onnx is CPU-only on Mac, and CoreML's operator coverage for streaming transducers is incomplete). mlx-audio only offers a pull-style interface, so this project rewrote its streaming core into a push-style real-time stepper (`asr.py`), and endpointing is reimplemented on top of Silero VAD following sherpa's rule1/2/3 semantics. The default spoken language is `en-us` (resolved internally to the model's `en-US` key) to avoid auto-detection jumping around in mixed-language speech. Language options accept both lowercase short tags and English language names, such as `zh-cn` / `Chinese`, `ja-jp` / `Japanese`, and `de-de` / `German`.
 
 ## Known Risks and Fallbacks
 

@@ -52,10 +52,10 @@ uv run livecaption --source system --context 0
 uv run livecaption --source mic --no-translate
 
 # 翻成日语、换更大的翻译模型
-uv run livecaption --target-lang Japanese --mt-model mlx-community/Hy-MT2-7B-4bit
+uv run livecaption --target-lang ja-jp --mt-model mlx-community/Hy-MT2-7B-4bit
 
 # 非英语会议：指定说话语言（40 个 locale，传错会列出全部可选值）
-uv run livecaption --asr-lang de-DE --target-lang Chinese
+uv run livecaption --asr-lang de-de --target-lang zh-cn
 
 # 只捕获某个 App（先用 `ps`/活动监视器拿到 Zoom 的 PID）
 uv run livecaption --source system --include-pid 12345
@@ -92,7 +92,7 @@ uv run livecaption --source mic --mem
 
 ## 选型说明
 
-`nemotron-3.5-asr-streaming` 是 `nemotron-speech-streaming-en` 的官方多语言后继（同为 cache-aware 真流式，0.6B 参数预算不变），不是用滑窗模拟离线模型。运行时选 mlx-audio：MLX 原生跑 Apple GPU（sherpa-onnx 在 mac 上只能 CPU，CoreML 对流式 transducer 算子覆盖不全）。mlx-audio 只提供 pull 式接口，本项目把它的 streaming 内核改写成了 push 式实时 stepper（`asr.py`），端点检测由 Silero VAD 按 sherpa 的 rule1/2/3 语义重实现。语言固定 `en-US`，避免 auto 检测在混杂语流里跳变。
+`nemotron-3.5-asr-streaming` 是 `nemotron-speech-streaming-en` 的官方多语言后继（同为 cache-aware 真流式，0.6B 参数预算不变），不是用滑窗模拟离线模型。运行时选 mlx-audio：MLX 原生跑 Apple GPU（sherpa-onnx 在 mac 上只能 CPU，CoreML 对流式 transducer 算子覆盖不全）。mlx-audio 只提供 pull 式接口，本项目把它的 streaming 内核改写成了 push 式实时 stepper（`asr.py`），端点检测由 Silero VAD 按 sherpa 的 rule1/2/3 语义重实现。默认说话语言是 `en-us`（内部映射到模型的 `en-US` key），避免 auto 检测在混杂语流里跳变。语言参数同时支持小写短代码和英文语言名，如 `zh-cn` / `Chinese`、`ja-jp` / `Japanese`、`de-de` / `German`。
 
 ## 已知风险与退路
 

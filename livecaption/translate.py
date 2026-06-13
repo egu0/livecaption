@@ -22,6 +22,7 @@ from collections.abc import Callable
 from datetime import datetime
 
 from . import config
+from .languages import normalize_target_language
 from .runtime import MLX_LOCK
 
 # Meta lead-ins the model sometimes emits despite the prompt's "only output the
@@ -78,7 +79,7 @@ class Translator(threading.Thread):
     ):
         super().__init__(daemon=True, name="translator")
         self.model_name = model_name
-        self.target_lang = target_lang
+        self.target_lang = normalize_target_language(target_lang).prompt_name
         self.on_translation = on_translation
         self.on_ready = on_ready
         # called if the model fails to load: lets the output side release any finals it was

@@ -35,6 +35,7 @@ import numpy as np
 
 from . import config
 from .audio import SENTINEL
+from .languages import normalize_asr_language
 
 # In both mode the two AsrWorkers share weights (including VAD), and MLX gives no
 # guarantee for concurrent multi-threaded evaluation: all ASR-side mlx computation holds
@@ -85,10 +86,14 @@ class Recognizer:
         say = log or (lambda _m: None)
         say(f"Loading ASR model {asr_model} …")
         self.model = load_stt(asr_model)
-        # The model is conditioned via a language prompt; an unknown key silently falls
-        # back to the default language, so we validate explicitly and list every supported
-        # locale, avoiding the case where a user typos it and assumes it took effect
+        # The model is conditioned via a language prompt. The CLI accepts tags and English
+        # names case-insensitively (for example "en-us" / "English"), then we resolve them
+        # to the exact model prompt key here.
         known = getattr(self.model, "prompt_dictionary", None) or {}
+        language = normalize_asr_language(language, known if known else None)
+        # An unknown key silently falls back to the default language, so we validate
+        # explicitly and list every supported locale, avoiding the case where a user typos it
+        # and assumes it took effect.
         if known and language not in known:
             raise ValueError(
                 f"ASR language '{language}' is not supported by this model.\n"

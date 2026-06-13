@@ -23,11 +23,12 @@ SAMPLE_RATE = 16000  # ASR / VAD / audiotee all use 16k mono
 SYSTEM_AUDIO_STALL_SEC = 5.0
 
 # ---- ASR (mlx-audio nemotron-3.5) ----
-# English by default; CLI --asr-lang overrides it (the model supports 40 locales, and an
-# invalid value lists all options).
+# English by default; CLI --asr-lang overrides it. The CLI accepts lowercase tags such as
+# "en-us" and English language names such as "English"; the ASR layer normalizes them to the
+# exact model prompt key and lists all supported locales when a value is invalid.
 # "auto" lets the model detect the language, but with mixed Chinese/English in meetings the
 # detected language jumps around, so it's not recommended.
-ASR_LANGUAGE = "en-US"
+ASR_LANGUAGE = "en-us"
 # Streaming look-ahead [left, right]: right+1 downsampled frames = how big a chunk is fed at
 # once = partial refresh granularity.
 # Settings the model was trained on: [56,0]=80ms  [56,3]=320ms  [56,6]=560ms  [56,13]=1120ms
@@ -122,4 +123,4 @@ MT_TOP_K = 20
 MT_REPETITION_PENALTY = 1.05
 # plenty for a single subtitle line; just an upper-bound safeguard against the model running away
 MT_MAX_TOKENS = 256
-DEFAULT_TARGET_LANG = "Chinese"
+DEFAULT_TARGET_LANG = "zh-cn"

@@ -17,7 +17,7 @@ from pathlib import Path
 import numpy as np
 
 from livecaption.asr import build_recognizer
-from livecaption.config import ASR_LANGUAGE, DEFAULT_ASR_MODEL, SAMPLE_RATE
+from livecaption.config import DEFAULT_ASR_MODEL, SAMPLE_RATE
 
 TEXT = "The quick brown fox jumps over the lazy dog near the river bank."
 
@@ -60,7 +60,7 @@ with tempfile.TemporaryDirectory() as td:
     rec = build_recognizer(DEFAULT_ASR_MODEL)
     print("recognizer built OK (nemotron-3.5 + silero-vad)")
 
-    offline = rec.model.generate(str(wav), language=ASR_LANGUAGE).text.strip()
+    offline = rec.model.generate(str(wav), language=rec.language).text.strip()
     print(f"offline : {offline}")
 
     # Simulate real-time: 200ms per chunk, append 3s of silence at the end so rule2

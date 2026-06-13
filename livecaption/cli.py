@@ -19,6 +19,7 @@ from rich.console import Console
 from . import config
 from .asr import AsrWorker, build_recognizer
 from .audio import AudioSource, FileSource, MicSource, SystemAudioSource
+from .languages import normalize_target_language
 from .models import resolve_audiotee
 from .render import FileWriter, Renderer
 from .translate import Translator
@@ -59,12 +60,13 @@ def main(
         True, "--translate/--no-translate", help="Enable translation"
     ),
     target_lang: str = typer.Option(
-        config.DEFAULT_TARGET_LANG, help="Translation target language"
+        config.DEFAULT_TARGET_LANG,
+        help="Translation target language, e.g. zh-cn / Chinese, ja-jp / Japanese",
     ),
     asr_model: str = typer.Option(config.DEFAULT_ASR_MODEL, help="ASR model (HF id or local dir)"),
     asr_lang: str = typer.Option(
         config.ASR_LANGUAGE, "--asr-lang",
-        help="Spoken language locale, e.g. en-US, ja-JP, de-DE ('auto' = model-detected; "
+        help="Spoken language, e.g. en-us / English, ja-jp / Japanese ('auto' = model-detected; "
         "pass an invalid value to list all supported locales)",
     ),
     diarize: bool = typer.Option(
@@ -107,6 +109,14 @@ def main(
 
         console.print(sd.query_devices())
         raise typer.Exit()
+
+    target_language = None
+    if translate:
+        try:
+            target_language = normalize_target_language(target_lang)
+        except ValueError as e:
+            console.print(f"[red]{e}[/red]")
+            raise typer.Exit(1) from None
 
     # --- build audio sources ---
     need_system = source in (SourceKind.system, SourceKind.both)
@@ -191,7 +201,7 @@ def main(
         if translate:
             translator = Translator(
                 mt_model,
-                target_lang,
+                target_language.prompt_name if target_language else target_lang,
                 on_translation=handle_translation,
                 on_ready=lambda: console.print("[dim]Translation model ready.[/dim]"),
                 on_failed=handle_translation_disabled,
