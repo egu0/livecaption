@@ -34,7 +34,11 @@ _COMMON_STYLES = {
     # finalized source text: terminal's default foreground (the terminal theme guarantees
     # readability)
     "final": "",
-    "diff_del": "bold red strike",
+    # two-pass corrections: the corrected-away word is superseded content, so it gets the
+    # same de-emphasized mid-gray as partials (plus strikethrough) instead of shouting in
+    # red -- which also kept being misread against S4's red speaker label; only the new
+    # word stays green (and the speaker palette below avoids green for the same reason)
+    "diff_del": "grey50 strike",
     "diff_add": "bold green",
     # MLX memory status line: secondary diagnostic info, same neutral mid-gray as partials
     "mem": "grey50",
@@ -54,12 +58,15 @@ _TRANSLATION_STYLE = {
 # background.
 # Color is just a nice-to-have; the "S1"/"S2" text alone already distinguishes them, so default
 # just uses base colors.
-# Note: deliberately avoid the cyan/cyan-blue family, otherwise it would clash with the
-# translation (dark=bright_cyan / light=deep_sky_blue4)
+# Note: deliberately avoid the cyan/cyan-blue family (would clash with the translation:
+# dark=bright_cyan / light=deep_sky_blue4) and the green family (would clash with
+# diff_add's corrected-word green). Red is safe for S4 because diff_del is a gray
+# strikethrough, not red. Hues are kept consistent across themes (S1 magenta / S2 blue /
+# S3 orange / S4 red) so switching --theme doesn't reshuffle speaker identities.
 _SPEAKER_PALETTE = {
-    "default": ["bold magenta", "bold blue", "bold green", "bold red"],
-    "dark": ["bold bright_magenta", "bold bright_yellow", "bold bright_green", "bold bright_red"],
-    "light": ["bold magenta", "bold dark_orange3", "bold green4", "bold red"],
+    "default": ["bold magenta", "bold blue", "bold dark_orange3", "bold red"],
+    "dark": ["bold bright_magenta", "bold bright_blue", "bold orange1", "bold bright_red"],
+    "light": ["bold magenta", "bold blue", "bold dark_orange3", "bold red"],
 }
 
 
@@ -382,18 +389,27 @@ class FileWriter:
     FIFO, so translations arrive in order and completed entries flush from the head of the
     buffer. With translate=False the EN line is written immediately; any still-buffered finals
     are flushed on close. Late events arriving after close are simply dropped (a worker may
-    briefly survive past the cleanup-path join timeout; see cli)."""
+    briefly survive past the cleanup-path join timeout; see cli).
 
-    def __init__(self, path: Path, translate: bool = True):
+    The per-line source label ([me]/[them]) is written only when show_label is set, i.e. in
+    multi-source (both) mode where it disambiguates mic vs system audio. With a single source
+    the label is the same on every line, so it's pure noise and dropped (the terminal never
+    shows it either)."""
+
+    def __init__(self, path: Path, translate: bool = True, show_label: bool = False):
         self._f = open(path, "a", encoding="utf-8")  # noqa: SIM115
         self._lock = threading.Lock()
         self._translate = translate
+        self._show_label = show_label
         # buffered finals awaiting translation, kept in finalization order; entries:
         # {label, started_at, en: str, zh: str | None}
         self._pending: list[dict] = []
 
+    def _tag(self, label: str) -> str:
+        return f"[{label}] " if self._show_label else ""
+
     def final(self, label: str, segments: list, started_at: datetime) -> None:
-        en = f"[{started_at:%H:%M:%S}] [{label}] {_segments_text(segments)}\n"
+        en = f"[{started_at:%H:%M:%S}] {self._tag(label)}{_segments_text(segments)}\n"
         with self._lock:
             if self._f.closed:
                 return
@@ -406,7 +422,7 @@ class FileWriter:
             )
 
     def translation(self, label: str, zh_segments: list, started_at: datetime) -> None:
-        zh_line = f"    [{started_at:%H:%M:%S}] [{label}] {_segments_text(zh_segments)}\n"
+        zh_line = f"    [{started_at:%H:%M:%S}] {self._tag(label)}{_segments_text(zh_segments)}\n"
         with self._lock:
             if self._f.closed:
                 return

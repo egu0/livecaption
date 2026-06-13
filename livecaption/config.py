@@ -15,6 +15,12 @@ DEFAULT_MT_MODEL = "mlx-community/Hy-MT2-1.8B-8bit"
 
 # ---- Audio ----
 SAMPLE_RATE = 16000  # ASR / VAD / audiotee all use 16k mono
+# System audio stall watchdog: a healthy audiotee tap delivers PCM continuously (zeros
+# during silence), so receiving NOTHING for this many seconds means the tap died -- the
+# observed case is a default-output-device switch (audio keeps playing on the new device
+# while the tap stays on the old one, whose IO stops). The source then kills and
+# respawns audiotee, which re-taps the current default device, so captions resume.
+SYSTEM_AUDIO_STALL_SEC = 5.0
 
 # ---- ASR (mlx-audio nemotron-3.5) ----
 # English by default; CLI --asr-lang overrides it (the model supports 40 locales, and an
@@ -68,6 +74,17 @@ RULE1_MIN_TRAILING_SILENCE = 2.4
 #     pause doesn't fragment one utterance into pieces
 RULE2_PUNCT_SILENCE = 0.6  # trailing silence to cut when the text ends a sentence
 RULE2_MIN_TRAILING_SILENCE = 1.2  # trailing silence to cut when it does not
+# Soft max for fast continuous speech (podcasts, lively meetings), where pauses rarely
+# reach even RULE2_PUNCT_SILENCE and nearly every utterance would otherwise run into the
+# rule3 force-cut -- splitting mid-sentence, which wrecks readability and feeds the
+# translator dangling fragments. Once the utterance is this many seconds long, it is cut
+# at the next decoded sentence-final punctuation WITHOUT waiting for silence: the audio
+# is split retroactively at the punctuation token's timestamp and the remainder (decode
+# look-ahead that may already hold the next sentence's onset) carries over into the next
+# utterance, so nothing is clipped. (A silence-based escalation can't work here: the
+# ~560ms decode look-ahead means the punctuation appears in the text only after a short
+# pause is already over.)
+RULE2_SOFT_MAX_UTTERANCE = 8.0
 RULE3_MIN_UTTERANCE_LENGTH = 20.0  # max seconds before a sentence is force-cut
 
 # ---- Translation (Hy-MT2's officially recommended prompt and sampling parameters) ----
@@ -83,6 +100,10 @@ TRANSLATE_PROMPT = (
 # number of preceding sentences attached when translating (default 3 for better coherence;
 # 0 = sentence-by-sentence with no context)
 MT_CONTEXT_SENTENCES = 3
+# Sources shorter than this many words are translated WITHOUT the background template:
+# a tiny fragment gives the model almost nothing to anchor on, and the output then tends
+# to drift into translating the background block itself instead of the source text.
+MT_CONTEXT_MIN_WORDS = 5
 # Live translation preview: while a sentence is still being spoken, show a provisional ZH line
 # under the EN partial, refreshed once the in-progress text has grown by this many words AND
 # contains a sentence-ender (.?!). Debounced so we don't retranslate every chunk; the final

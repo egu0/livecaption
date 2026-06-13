@@ -9,7 +9,9 @@ from __future__ import annotations
 
 import contextlib
 import json
+import os
 import queue
+import select
 import subprocess
 import sys
 import threading
@@ -18,7 +20,7 @@ from abc import ABC, abstractmethod
 
 import numpy as np
 
-from .config import SAMPLE_RATE
+from .config import SAMPLE_RATE, SYSTEM_AUDIO_STALL_SEC
 
 SENTINEL = None  # putting this on the queue signals the audio stream has ended
 
@@ -152,6 +154,13 @@ class SystemAudioSource(AudioSource):
 
     audiotee protocol: stdout = raw PCM; stderr = one NDJSON record per line.
     With --sample-rate 16000, the output is fixed at 16-bit signed little-endian mono.
+
+    A supervisor thread restarts audiotee when the stream ends or stalls. A healthy tap
+    delivers PCM continuously (zeros during silence); receiving nothing at all for
+    SYSTEM_AUDIO_STALL_SEC means the tap died -- observed when the default output device
+    changes (audio keeps playing on the new device, the tap stays on the old one whose
+    IO stops, and a plain blocking read would starve the whole pipeline forever with no
+    diagnostic). Respawning re-taps the current default device, so captions resume.
     """
 
     def __init__(
@@ -164,8 +173,17 @@ class SystemAudioSource(AudioSource):
         self.audiotee_path = audiotee_path
         self.include_pids = include_pids or []
         self._proc: subprocess.Popen | None = None
+        self._zero_warned = False  # permission warning, once per run (not per respawn)
 
     def start(self) -> None:
+        # the first spawn raises on immediate failure (wrong path / instant crash), so
+        # the CLI can report it instead of starting a silently dataless track
+        self._spawn()
+        threading.Thread(
+            target=self._supervise, daemon=True, name=f"audiotee-{self.label}"
+        ).start()
+
+    def _spawn(self) -> None:
         cmd = [self.audiotee_path, "--sample-rate", str(SAMPLE_RATE)]
         for pid in self.include_pids:
             cmd += ["--include-processes", str(pid)]
@@ -180,12 +198,101 @@ class SystemAudioSource(AudioSource):
             raise RuntimeError(
                 f"audiotee failed to start (exit {self._proc.returncode}): {err.strip()}"
             )
-        threading.Thread(target=self._read_stderr, daemon=True).start()
-        threading.Thread(target=self._read_stdout, daemon=True).start()
+        threading.Thread(target=self._read_stderr, args=(self._proc,), daemon=True).start()
 
-    def _read_stderr(self) -> None:
-        assert self._proc and self._proc.stderr
-        for raw in self._proc.stderr:
+    def _supervise(self) -> None:
+        """Pump one audiotee process at a time; on EOF/stall, kill it and respawn."""
+        failures = 0
+        while not self._stop.is_set():
+            reason = self._pump(self._proc)
+            if self._stop.is_set():
+                break
+            self._kill_proc()
+            print(
+                f"\n[warn] system audio {reason}; restarting audiotee — if the output "
+                "device changed, capture resumes on the new one.",
+                file=sys.stderr,
+            )
+            try:
+                self._spawn()
+                failures = 0
+            except Exception as e:  # noqa: BLE001
+                failures += 1
+                if failures >= 3:
+                    print(
+                        f"\n[warn] could not restart audiotee ({e}); this track has "
+                        "stopped.",
+                        file=sys.stderr,
+                    )
+                    break
+                time.sleep(2.0)
+        self._put_sentinel()
+
+    def _pump(self, proc: subprocess.Popen) -> str:
+        """Forward one audiotee process's PCM into the queue until it ends.
+
+        Returns why it ended: "stream ended (audiotee exited)" or "stalled (no data for
+        Ns)"; "stopped" when stop() was requested. Reads via select with a timeout
+        instead of a plain blocking read, so a wedged tap is detected rather than
+        blocking forever.
+        """
+        fd = proc.stdout.fileno()
+        remainder = b""
+        frames_seen = 0
+        saw_audio = False
+        last_data = time.monotonic()
+        while not self._stop.is_set():
+            ready, _, _ = select.select([fd], [], [], 0.5)
+            if not ready:
+                if time.monotonic() - last_data >= SYSTEM_AUDIO_STALL_SEC:
+                    return f"stalled (no data for {SYSTEM_AUDIO_STALL_SEC:.0f}s)"
+                continue
+            buf = os.read(fd, 4096)
+            if not buf:
+                return "stream ended (audiotee exited)"
+            last_data = time.monotonic()
+            buf = remainder + buf
+            # s16le: 2 bytes per sample, carry a half-sample to the next round
+            n = len(buf) - (len(buf) % 2)
+            chunk, remainder = buf[:n], buf[n:]
+            if not chunk:
+                continue
+            pcm = np.frombuffer(chunk, dtype="<i2")
+            # without recording permission the process tap silently returns exact 0;
+            # several seconds of all-zero is most likely a permission issue
+            if not saw_audio:
+                if int(np.abs(pcm).max(initial=0)) > 30:
+                    saw_audio = True
+                else:
+                    frames_seen += len(pcm)
+                    if not self._zero_warned and frames_seen > SAMPLE_RATE * 8:
+                        self._zero_warned = True
+                        print(
+                            "\n[warn] Captured ~8s of system audio but it is all silence. "
+                            "If sound is actually playing, the terminal app almost certainly "
+                            "lacks System Audio Recording permission. Grant it under System "
+                            "Settings > Privacy & Security > Screen & System Audio Recording: "
+                            "on macOS 15+ scroll to the 'System Audio Recording Only' "
+                            "sub-section (NOT the top one) and add your terminal, then fully "
+                            "quit and restart it. See README.",
+                            file=sys.stderr,
+                        )
+            self._offer(pcm.astype(np.float32) / 32768.0)
+        return "stopped"
+
+    def _kill_proc(self) -> None:
+        proc = self._proc
+        if proc is None:
+            return
+        with contextlib.suppress(Exception):
+            proc.terminate()
+            proc.wait(timeout=2)
+        if proc.poll() is None:
+            with contextlib.suppress(Exception):
+                proc.kill()
+
+    def _read_stderr(self, proc: subprocess.Popen) -> None:
+        for raw in proc.stderr:
             line = raw.decode("utf-8", "replace").strip()
             if not line:
                 continue
@@ -207,60 +314,7 @@ class SystemAudioSource(AudioSource):
                 detail = (msg.get("data") or {}).get("message", line)
                 print(f"[audiotee error] {detail}", file=sys.stderr)
 
-    def _read_stdout(self) -> None:
-        assert self._proc and self._proc.stdout
-        stdout = self._proc.stdout
-        remainder = b""
-        frames_seen = 0
-        saw_audio = False
-        warned = False
-        while not self._stop.is_set():
-            buf = stdout.read(4096)
-            if not buf:
-                break
-            buf = remainder + buf
-            # s16le: 2 bytes per sample, carry a half-sample to the next round
-            n = len(buf) - (len(buf) % 2)
-            chunk, remainder = buf[:n], buf[n:]
-            if not chunk:
-                continue
-            pcm = np.frombuffer(chunk, dtype="<i2")
-            # without recording permission the process tap silently returns exact 0;
-            # several seconds of all-zero is most likely a permission issue
-            if not saw_audio:
-                if int(np.abs(pcm).max(initial=0)) > 30:
-                    saw_audio = True
-                else:
-                    frames_seen += len(pcm)
-                    if not warned and frames_seen > SAMPLE_RATE * 8:
-                        warned = True
-                        print(
-                            "\n[warn] Captured ~8s of system audio but it is all silence. "
-                            "If sound is actually playing, the terminal app almost certainly "
-                            "lacks System Audio Recording permission. Grant it under System "
-                            "Settings > Privacy & Security > Screen & System Audio Recording: "
-                            "on macOS 15+ scroll to the 'System Audio Recording Only' "
-                            "sub-section (NOT the top one) and add your terminal, then fully "
-                            "quit and restart it. See README.",
-                            file=sys.stderr,
-                        )
-            self._offer(pcm.astype(np.float32) / 32768.0)
-        if not self._stop.is_set():
-            # we didn't stop it ourselves: audiotee exited mid-stream, otherwise this
-            # track would silently vanish
-            print(
-                "\n[warn] system audio stream ended unexpectedly (audiotee exited); "
-                "this track has stopped.",
-                file=sys.stderr,
-            )
-        self._put_sentinel()
-
     def stop(self) -> None:
         self._stop.set()
-        if self._proc is not None:
-            self._proc.terminate()
-            try:
-                self._proc.wait(timeout=2)
-            except subprocess.TimeoutExpired:
-                self._proc.kill()
+        self._kill_proc()
         self._put_sentinel()

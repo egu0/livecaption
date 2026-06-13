@@ -13,6 +13,7 @@ seconds.
 from __future__ import annotations
 
 import queue
+import re
 import sys
 import threading
 import traceback
@@ -22,6 +23,42 @@ from datetime import datetime
 
 from . import config
 from .runtime import MLX_LOCK
+
+# Meta lead-ins the model sometimes emits despite the prompt's "only output the
+# translation" instruction -- observed mainly with the background-context template on
+# noisy ASR fragments (e.g. "根据提供的背景信息，以下是翻译后的中文内容：…"). Anchored at the
+# start; every alternative must end in a colon so a translation that genuinely begins
+# with these characters is not eaten.
+_BOILERPLATE_RE = re.compile(
+    "|".join(
+        (
+            # "根据/结合/基于…背景信息(，以下是翻译后的中文内容)："
+            r"(?:根据|结合|基于)[^：:，,。]{0,12}(?:背景信息|上下文)[^：:。]{0,25}[：:]",
+            # "以下是/下面是…翻译/译文…："
+            r"(?:以下|下面)是[^：:。]{0,12}(?:翻译|译文)[^：:。]{0,12}[：:]",
+            # English meta lead-in, for non-Chinese target languages
+            r"(?:here is|here's|the following is)[^:：.]{0,40}translat[^:：.]{0,20}[:：]",
+        )
+    ),
+    re.IGNORECASE,
+)
+# quote pairs the model wraps the translation in after a meta lead-in
+_QUOTE_PAIRS = {"“": "”", '"': '"', "「": "」", "'": "'"}
+
+
+def _strip_boilerplate(zh: str) -> str:
+    """Drop a leading meta announcement (and the quotes wrapping what follows it). Quotes
+    are only unwrapped when boilerplate was actually stripped: a translation of genuinely
+    quoted speech keeps its quotes."""
+    out = zh.strip()
+    m = _BOILERPLATE_RE.match(out)
+    if not m:
+        return out
+    out = out[m.end() :].strip()
+    closing = _QUOTE_PAIRS.get(out[:1])
+    if closing and len(out) >= 2 and out.endswith(closing):
+        out = out[1:-1].strip()
+    return out or zh.strip()  # if the model emitted ONLY boilerplate, keep the original
 
 
 class Translator(threading.Thread):
@@ -62,6 +99,9 @@ class Translator(threading.Thread):
         self._tokenizer = None
         self._sampler = None
         self._processors = None
+        # previous finalized segment's translation, for context-echo detection (previews
+        # are provisional and don't update it)
+        self._last_zh = ""
 
     def submit(self, label: str, segments: list, started_at: datetime) -> None:
         # segments = [(speaker, text, diff), ...]; each speaker segment is translated separately
@@ -105,25 +145,53 @@ class Translator(threading.Thread):
         )
 
     def _translate(self, text: str, record: bool = True) -> str:
+        # Only use the background template when there's accumulated context AND the source
+        # isn't a tiny fragment (a fragment gives the model little to anchor on, and the
+        # output then drifts into translating the background block instead of the source).
+        # Join with spaces rather than newlines: the "sentences" cut by endpointing are
+        # often fragments of a continuous speech stream, and space-joining stays closer
+        # to the original continuous text, which works better as background.
+        context = ""
+        if self._history and len(text.split()) >= config.MT_CONTEXT_MIN_WORDS:
+            context = " ".join(self._history)
+        if record and self._history is not None:
+            # add the current sentence to history as context for later sentences (previews are
+            # provisional, so they don't pollute the context)
+            self._history.append(text)
+        zh = _strip_boilerplate(self._generate(text, context))
+        if context and self._looks_like_context_echo(zh):
+            # Known failure of the background template on noisy input: the model translates
+            # the background block instead of the source, so the output largely reproduces
+            # the previous sentence's translation. Retranslate context-free.
+            zh = _strip_boilerplate(self._generate(text, ""))
+        if record:
+            self._last_zh = zh
+        return zh
+
+    def _looks_like_context_echo(self, zh: str) -> bool:
+        """Heuristic for "the model translated the context, not the source": such output
+        re-renders the previous sentences, so it shares most of its character bigrams with
+        the previous segment's translation (re-translations paraphrase, so verbatim
+        matching is not enough -- bigram containment catches the shared content words).
+        Consecutive genuine sentences on one topic measure far below the threshold."""
+        prev = self._last_zh
+        if len(prev) < 16:
+            return False
+        prev_bi = {prev[i : i + 2] for i in range(len(prev) - 1)}
+        zh_bi = {zh[i : i + 2] for i in range(len(zh) - 1)}
+        return len(prev_bi & zh_bi) >= 0.45 * len(prev_bi)
+
+    def _generate(self, text: str, context: str) -> str:
         from mlx_lm import stream_generate
 
-        if self._history:  # only use the background template when there's accumulated context
-            # Join with spaces rather than newlines: the "sentences" cut by endpointing are
-            # often fragments of a continuous speech stream, and space-joining stays closer
-            # to the original continuous text, which works better as background
+        if context:
             content = config.TRANSLATE_PROMPT_WITH_CONTEXT.format(
-                context=" ".join(self._history),
-                target_lang=self.target_lang,
-                text=text,
+                context=context, target_lang=self.target_lang, text=text
             )
         else:
             content = config.TRANSLATE_PROMPT.format(
                 target_lang=self.target_lang, text=text
             )
-        if record and self._history is not None:
-            # add the current sentence to history as context for later sentences (previews are
-            # provisional, so they don't pollute the context)
-            self._history.append(text)
         messages = [{"role": "user", "content": content}]
         # mlx-lm defaults to tokenize=True and returns token ids; matches the official README usage
         prompt = self._tokenizer.apply_chat_template(

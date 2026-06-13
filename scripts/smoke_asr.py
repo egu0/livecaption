@@ -25,7 +25,12 @@ TEXT = "The quick brown fox jumps over the lazy dog near the river bank."
 def synthesize(text: str, out_wav: Path) -> None:
     """say -> aiff -> afconvert to 16k mono s16 wav (all macOS built-in tools)."""
     aiff = out_wav.with_suffix(".aiff")
-    subprocess.run(["say", "-o", str(aiff), text], check=True)
+    # Pin a standard voice: the system default can be a broken/undownloaded compact voice
+    # that silently renders a sub-second garbage fragment; fall back if Samantha is absent
+    try:
+        subprocess.run(["say", "-v", "Samantha", "-o", str(aiff), text], check=True)
+    except subprocess.CalledProcessError:
+        subprocess.run(["say", "-o", str(aiff), text], check=True)
     subprocess.run(
         ["afconvert", "-f", "WAVE", "-d", f"LEI16@{SAMPLE_RATE}", "-c", "1",
          str(aiff), str(out_wav)],

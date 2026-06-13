@@ -152,7 +152,9 @@ def main(
     # meeting transcripts may contain sensitive content; tighten the directory permissions to
     # owner-only
     out.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
-    writer = FileWriter(out, translate=translate)
+    # only label lines with their source ([me]/[them]) when there's more than one source to
+    # disambiguate (both mode); a single source's label is constant noise
+    writer = FileWriter(out, translate=translate, show_label=len(sources) > 1)
 
     stop_event = threading.Event()
 

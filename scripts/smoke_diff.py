@@ -50,4 +50,16 @@ assert spans is not None
 assert words(spans, {"same", "add"}) == "totally different text"
 assert words(spans, {"del"}) == "completely wrong"
 
+# 7. Punctuation/casing-only corrections are not rendered as del+add noise: the segment
+#    counts as unchanged (the final text already carries the corrected form)
+assert _inline_diff("america is great", ["America, is great"]) == [None]
+assert _inline_diff("you that sounds", ["you. That sounds"]) == [None]
+
+# 8. Mixed: the real word change still shows, the punctuation-only ones don't; "same"
+#    spans carry the new (corrected) text
+spans = _inline_diff("i red a book.", ["i read a book?"])[0]
+assert spans is not None
+assert words(spans, {"del"}) == "red"
+assert words(spans, {"same", "add"}) == "i read a book?"
+
 print("inline diff smoke test PASSED")

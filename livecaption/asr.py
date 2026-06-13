@@ -22,12 +22,13 @@ from __future__ import annotations
 
 import difflib
 import queue
+import re
 import sys
 import threading
 import traceback
 from collections import deque
 from collections.abc import Callable
-from datetime import datetime
+from datetime import datetime, timedelta
 
 import mlx.core as mx
 import numpy as np
@@ -52,6 +53,19 @@ _MEL_HOLDBACK = 2
 # keep the retained frames' windows clear of the preemphasis-contaminated first sample of
 # the slice; 4 leaves some margin, correctness verified by scripts/smoke_mel.py
 _MEL_LCTX = 4
+# Sentence end for the soft-max punctuation cut: "." only counts after a word of 3+
+# letters, so abbreviations ("U.S.", "Dr.") don't trigger a premature split; "?" / "!"
+# always count. Allows trailing closing quotes/brackets.
+_SENT_END_RE = re.compile(r"(?:[A-Za-z]{3,}\.|[!?])[\"'”’)\]]*\s*$")
+# Audio back-off for the soft-max cut. RNNT token timestamps lag acoustics (emission
+# delay, worst for punctuation, which is only decided once the next words are heard), so
+# cutting at the punctuation token's own timestamp bleeds the next sentence's first word
+# into the head. Anchor on the NEXT token's start instead and back off by this much --
+# 4 encoder frames, covering the typical 2-4 frame word-onset emission delay (0.24 was
+# measured to still clip short words like "The"). With a real pause the cut lands inside
+# it; the head's trailing overlap decodes into words that the post-second-pass
+# truncation drops, and the tail re-decodes them.
+_SPLIT_BACKOFF_SEC = 0.32
 
 
 class Recognizer:
@@ -204,18 +218,64 @@ class _StreamingEncoder:
         return self.model.apply_prompt(h, self.language)
 
 
+# Edge punctuation ignored when comparing words for the inline diff (ASCII plus the
+# curly quotes/dashes/ellipsis the model emits); inner apostrophes ("don't") survive
+_DIFF_TRIM = "!\"#$%&'()*+,-./:;<=>?@[\\]^_`{|}~“”‘’„‛…—–"
+
+
+def _diff_key(word: str) -> str:
+    """Comparison key: casefold + strip edge punctuation. Two-pass corrections are mostly
+    punctuation/casing touch-ups ("America" -> "America,"); rendering each as a del+add
+    pair doubles the words and drowns the line in red/green noise, so those compare as
+    equal and only true word changes show up as corrections (the final text still carries
+    the corrected form -- "same" spans render the new words)."""
+    return word.strip(_DIFF_TRIM).casefold()
+
+
+def _truncate_after_sentence(text: str, tokens: list, old_end: float, cut_sec: float):
+    """Drop second-pass tokens decoded from the overlap audio past the soft-max cut.
+
+    Prefer cutting after the sentence-end token nearest in time to the streaming-pass
+    punctuation (timestamps shift a frame or two between passes); if the re-decode
+    produced no nearby sentence end (it may merge or re-punctuate), fall back to the
+    audio boundary itself. The dropped words live in the tail audio and re-decode in
+    the next utterance, so nothing is lost or duplicated.
+    """
+    from mlx_audio.stt.models.nemo.alignment import (
+        sentences_to_result,
+        tokens_to_sentences,
+    )
+
+    best = None
+    for i, t in enumerate(tokens):
+        if (
+            any(c in ".?!" for c in t.text)
+            and abs(t.end - old_end) <= 0.6
+            and (best is None or abs(t.end - old_end) < abs(tokens[best].end - old_end))
+        ):
+            best = i
+    kept = tokens[: best + 1] if best is not None else [t for t in tokens if t.start < cut_sec]
+    if not kept or len(kept) == len(tokens):
+        return text, tokens
+    new_text = sentences_to_result(tokens_to_sentences(kept)).text.strip()
+    return (new_text, kept) if new_text else (text, tokens)
+
+
 def _inline_diff(old: str, segs: list[str]) -> list[list[tuple[str, str]] | None]:
     """Whole-sentence word-level diff sliced by final segments, for the terminal to render
     the correction effect inline within each final line.
 
-    Returns a list the same length as segs; each item is [(kind, words)] spans
+    Words are matched via _diff_key, so punctuation/casing-only corrections don't produce
+    spans. Returns a list the same length as segs; each item is [(kind, words)] spans
     (kind: same/del/add), or None if that segment has no correction. A deleted word is
     anchored to the segment that owns its position in the new text.
     """
     a = old.split()
     seg_words = [s.split() for s in segs]
     b = [w for ws in seg_words for w in ws]
-    ops = difflib.SequenceMatcher(a=a, b=b).get_opcodes()
+    ops = difflib.SequenceMatcher(
+        a=[_diff_key(w) for w in a], b=[_diff_key(w) for w in b], autojunk=False
+    ).get_opcodes()
     out: list[list[tuple[str, str]] | None] = []
     lo = 0
     for si, ws in enumerate(seg_words):
@@ -293,6 +353,10 @@ class OnlineStream:
         self._text = ""
         self._live_spk: int | None = None  # provisional speaker used for partials (given by peek)
         self._peeked_samples = 0
+        # seconds of carried-over audio this utterance was seeded with (soft-max cut):
+        # its speech started this long before the first partial, so AsrWorker backdates
+        # started_at by it
+        self.seed_skew_sec = 0.0
 
     # ---- public API ----
 
@@ -357,8 +421,21 @@ class OnlineStream:
             self._peeked_samples = self._n_samples
             self._diar_peek()
 
-        silence_sec = self._silence_frames * _VAD_FRAME_SEC
         utt_sec = self._n_samples / config.SAMPLE_RATE
+        # Soft max: once the utterance is this long, cut at the most recent decoded
+        # sentence-final punctuation, without waiting for silence -- in fast continuous
+        # speech pauses rarely reach RULE2_PUNCT_SILENCE and every utterance would run
+        # into the rule3 force-cut mid-sentence. The cut is retroactive at the token
+        # timestamp ("text ends with punctuation" can never be observed: a short pause
+        # fits inside one decode chunk, so the period and the next sentence's first words
+        # arrive together). Audio and tokens past the punctuation carry over into the
+        # next utterance inside _finalize, so nothing is clipped.
+        if utt_sec >= config.RULE2_SOFT_MAX_UTTERANCE:
+            cut = self._last_sentence_end()
+            if cut is not None:
+                return events + self._finalize(split_token=cut)
+
+        silence_sec = self._silence_frames * _VAD_FRAME_SEC
         # rule2: cut sooner once the text already ends a sentence (. ? !), otherwise wait the
         # longer silence so a mid-sentence pause doesn't fragment the utterance
         ends_sentence = self._text.rstrip()[-1:] in ".?!"
@@ -376,23 +453,98 @@ class OnlineStream:
             events += self._finalize()
         return events
 
-    def _finalize(self) -> list[tuple]:
-        self._drive(final=True)  # flush out the held-back tail mel
+    def _last_sentence_end(self) -> int | None:
+        """Index of the most recent hypothesis token that ends a sentence, or None.
+
+        A token containing . ? ! only counts when the text up to it passes _SENT_END_RE
+        (the 3+-letter-word guard against abbreviations / decimals); a few preceding
+        tokens are enough context since they concatenate into the trailing words.
+        """
+        hyp = self._hypothesis
+        for i in range(len(hyp) - 1, -1, -1):
+            if not any(c in ".?!" for c in hyp[i].text):
+                continue
+            prefix = "".join(t.text for t in hyp[max(0, i - 3) : i + 1])
+            if _SENT_END_RE.search(prefix):
+                return i
+        return None
+
+    def _finalize(self, split_token: int | None = None) -> list[tuple]:
+        from mlx_audio.stt.models.nemo.alignment import (
+            sentences_to_result,
+            tokens_to_sentences,
+        )
+
+        audio = np.concatenate(self._audio) if self._audio else None
         text = self._text
         tokens = self._hypothesis
-        audio = np.concatenate(self._audio) if self._audio else None
+        tail: np.ndarray | None = None
+        cut_sec: float | None = None
+        if split_token is not None and audio is not None and len(tokens) > split_token:
+            # Soft-max cut. The audio boundary anchors on the next token's start (see
+            # _SPLIT_BACKOFF_SEC: punctuation timestamps lag acoustics too much to cut
+            # on); everything past it re-seeds the next utterance below, so the next
+            # sentence's first words -- often already inside the decode look-ahead --
+            # re-decode there instead of being clipped or orphaned onto this line.
+            # No final-flush of the held-back mel: the punctuation is already decoded.
+            punct = tokens[split_token]
+            # Anchor on the next WORD-BEARING token: a bare separator token right after
+            # the punctuation can carry a timestamp even earlier than the punct's. No
+            # punct-based floor -- punctuation timestamps lag worst of all (the decoder
+            # commits "." only after hearing the next words; measured emitting in the
+            # same frame as the next word), so flooring on punct.end cuts INTO the next
+            # sentence's first words. Cutting generously early is safe: the head's text
+            # comes from the full-buffer second pass truncated at the sentence end.
+            nxt = next((t for t in tokens[split_token + 1 :] if t.text.strip()), None)
+            anchor = nxt.start if nxt is not None else punct.end
+            sec = max(0.0, anchor - _SPLIT_BACKOFF_SEC)
+            n_cut = int(sec * config.SAMPLE_RATE)
+            if 0 < n_cut < len(audio):
+                cut_sec = sec
+                tail = audio[n_cut:]
+                tokens = tokens[: split_token + 1]
+                text = sentences_to_result(tokens_to_sentences(tokens)).text.strip()
+        if cut_sec is None:
+            self._drive(final=True)  # flush out the held-back tail mel
+            audio = np.concatenate(self._audio) if self._audio else None
+            text = self._text
+            tokens = self._hypothesis
         self._reset()
+        if tail is not None and len(tail):
+            # the carried-over audio opens the next utterance already ACTIVE (it holds
+            # speech, not pre-roll silence); decoding resumes on the next frame. Record
+            # its duration so AsrWorker can backdate started_at: the speech in the tail
+            # began that long before its first partial will appear.
+            self._active = True
+            self._audio = [tail]
+            self._n_samples = len(tail)
+            self.seed_skew_sec = len(tail) / config.SAMPLE_RATE
         if not text:
             return []
         old_text = text
+        split_punct_end = tokens[-1].end if cut_sec is not None and tokens else 0.0
         if audio is not None:
+            # Second pass over the FULL buffer (head + overlap past the cut): the
+            # overlap gives the decoder right-context so the head's last words come out
+            # clean; in split mode whatever it decodes beyond the sentence end is
+            # truncated away (those words live in the tail and re-decode next utterance)
             text, tokens = self._second_pass(audio, text, tokens)
-        if self._diar is None or audio is None or not tokens:
+            if cut_sec is not None:
+                text, tokens = _truncate_after_sentence(
+                    text, tokens, split_punct_end, cut_sec
+                )
+        # diarization must consume each audio sample exactly once across finals, so it
+        # gets only the head slice; the tail is fed again as part of the next utterance
+        head_audio = audio if cut_sec is None else audio[: int(cut_sec * config.SAMPLE_RATE)]
+        if self._diar is None or head_audio is None or not tokens:
             parts: list[tuple[int | None, str]] = [(None, text)]
         else:
             # _attribute_speakers returns (text, speaker, t0); the per-segment start time is no
             # longer needed (one timestamp per utterance now), so keep only (speaker, text)
-            parts = [(spk, seg) for seg, spk, _t0 in self._attribute_speakers(audio, tokens, text)]
+            parts = [
+                (spk, seg)
+                for seg, spk, _t0 in self._attribute_speakers(head_audio, tokens, text)
+            ]
         # two-pass inline-diff spans, sliced per speaker segment (None where no correction)
         diffs: list = [None] * len(parts)
         if old_text != text:
@@ -539,7 +691,13 @@ class OnlineStream:
 
         groups: list[tuple[int, list]] = []
         for t, s in zip(tokens, spk_seq, strict=True):
-            if groups and groups[-1][0] == s:
+            # Tokens are subword pieces and a word-start piece carries a leading space
+            # (sentence text is plain concatenation of token texts, see nemo alignment).
+            # Only open a new speaker group at a word start: a diarization boundary that
+            # lands mid-word would otherwise split the word across two finals
+            # ("used" -> "u" | "sed").
+            starts_word = t.text.startswith(" ")
+            if groups and (groups[-1][0] == s or not starts_word):
                 groups[-1][1].append(t)
             else:
                 groups.append((s, [t]))
@@ -738,6 +896,7 @@ class AsrWorker(threading.Thread):
         stream = self.recognizer.create_stream()
         last_partial = ""
         started_at: datetime | None = None
+        last_final_ts: datetime | None = None
         while True:
             samples = self.audio_queue.get()
             events = (
@@ -748,14 +907,24 @@ class AsrWorker(threading.Thread):
                     segments = ev[1]
                     ts = started_at if started_at is not None else datetime.now()
                     self.on_final(self.label, segments, ts)
+                    last_final_ts = ts
                     last_partial = ""
                     started_at = None
                 else:  # ("partial", text, speaker)
                     _, text, speaker = ev
                     if text != last_partial:
-                        # the utterance's first non-empty result -> record as the start time
+                        # the utterance's first non-empty result -> record as the start
+                        # time, backdated by any carried-over audio the utterance was
+                        # seeded with (soft-max cut), whose speech began before this.
+                        # Clamped to the previous final's timestamp: in file mode the
+                        # decode runs faster than real time, so the backdating can
+                        # overshoot and make timestamps run backwards.
                         if not last_partial:
-                            started_at = datetime.now()
+                            started_at = datetime.now() - timedelta(
+                                seconds=stream.seed_skew_sec
+                            )
+                            if last_final_ts is not None:
+                                started_at = max(started_at, last_final_ts)
                         last_partial = text
                         self.on_partial(self.label, text, started_at, speaker)
             if samples is SENTINEL:
