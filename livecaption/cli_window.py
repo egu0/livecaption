@@ -111,6 +111,11 @@ def main(
         """ASR worker crashed — stop the pipeline so the window doesn't pretend to listen."""
         window.set_status("Error: ASR worker stopped unexpectedly")
         stop_event.set()
+        if window is not None:
+            try:
+                window.close()
+            except Exception:
+                pass
 
     worker = AsrWorker(
         recognizer,
