@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import sys
-import time
 import threading
 from pathlib import Path
 
@@ -46,7 +45,7 @@ def test_thread_safety():
     n = 50
     barrier = threading.Barrier(2)
 
-    def producer(prefix):
+    def producer(prefix: str) -> None:
         barrier.wait()
         for i in range(n):
             q.enqueue_partial(f"{prefix}-{i}", None)
