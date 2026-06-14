@@ -7,6 +7,7 @@ Tk-free so it can be unit-tested without a display.
 
 from __future__ import annotations
 
+import contextlib
 import queue
 import threading
 import tkinter as tk
@@ -156,7 +157,9 @@ class WindowRenderer:
         """Share the CLI-level stop_event so window-close signals propagate out."""
         self._stop_event = event
 
-    def partial(self, label: str, text: str, started_at: datetime, speaker: int | None = None) -> None:
+    def partial(
+        self, label: str, text: str, started_at: datetime, speaker: int | None = None
+    ) -> None:
         """Called from AsrWorker thread. Enqueue partial update.
 
         Note: speaker is accepted to match the AsrWorker.on_partial callback contract
@@ -216,10 +219,8 @@ class WindowRenderer:
             elif kind == "final":
                 self._apply_final(event[1], event[2])
 
-        try:
+        with contextlib.suppress(tk.TclError):
             self._root.after(_DRAIN_INTERVAL_MS, self._drain_queue)
-        except tk.TclError:
-            pass  # window already destroyed
 
     def _apply_status(self, message: str) -> None:
         self._status_var.set(message)
