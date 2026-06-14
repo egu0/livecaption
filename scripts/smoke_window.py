@@ -9,7 +9,7 @@ from pathlib import Path
 # Allow running from repo root: uv run python scripts/smoke_window.py
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from livecaption.window import UiQueue
+from livecaption.window import UiQueue, WindowRenderer
 
 
 def test_enqueue_and_drain_order():
@@ -93,6 +93,53 @@ def test_partial_event_with_timestamp():
     assert events[0][2] is ts
 
 
+def test_window_defers_final_when_partial_arrives_in_same_drain():
+    """A coalesced partial+final batch must paint the partial for one UI tick first."""
+    from datetime import datetime
+
+    ts = datetime.now()
+    events = [
+        ("partial", "live words", ts),
+        ("final", "corrected sentence", ts),
+    ]
+    applied = []
+
+    class FakeUi:
+        def drain(self):
+            out = list(events)
+            events.clear()
+            return out
+
+    class FakeRoot:
+        def winfo_exists(self):
+            return True
+
+        def after(self, *_args: object):
+            return None
+
+    renderer = WindowRenderer.__new__(WindowRenderer)
+    renderer._root = FakeRoot()
+    renderer._ui = FakeUi()
+    renderer._deferred_events = []
+    renderer._apply_status = lambda message: applied.append(("status", message))
+    renderer._apply_partial = lambda text, started_at: applied.append(
+        ("partial", text, started_at)
+    )
+    renderer._apply_final = lambda text, started_at: applied.append(
+        ("final", text, started_at)
+    )
+
+    WindowRenderer._drain_queue(renderer)
+    assert applied == [("partial", "live words", ts)]
+    assert renderer._deferred_events == [("final", "corrected sentence", ts)]
+
+    WindowRenderer._drain_queue(renderer)
+    assert applied == [
+        ("partial", "live words", ts),
+        ("final", "corrected sentence", ts),
+    ]
+
+
 def test_window_entry_point_func_exists():
     """cli_window.main is importable and callable (Typer function)."""
     from livecaption.cli_window import main as window_main
@@ -172,6 +219,7 @@ if __name__ == "__main__":
         test_thread_safety,
         test_status_event,
         test_partial_event_with_timestamp,
+        test_window_defers_final_when_partial_arrives_in_same_drain,
         test_window_entry_point_func_exists,
         test_window_entry_point_no_translate_import,
         test_window_entry_point_no_diarize,

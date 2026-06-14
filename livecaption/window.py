@@ -61,10 +61,6 @@ _WIN_HEIGHT = 500
 # Font sizes (points)
 _FONT_STATUS = 13
 _FONT_TRANSCRIPT = 16
-_FONT_PARTIAL = 16
-
-# Partial widget: fixed height in text lines
-_PARTIAL_LINES = 3
 
 # Transcript history widget: keep at most this many lines to bound memory
 _MAX_HISTORY_LINES = 500
@@ -86,6 +82,7 @@ class WindowRenderer:
 
     def __init__(self) -> None:
         self._ui = UiQueue()
+        self._deferred_events: list[tuple] = []
         self._stop_event = threading.Event()
 
         # ---- Tk root ----
@@ -125,28 +122,11 @@ class WindowRenderer:
         scrollbar = ttk.Scrollbar(self._root, command=self._transcript_text.yview)
         self._transcript_text.configure(yscrollcommand=scrollbar.set)
 
+        # Tag for live partial text: grey to signal "tentative, still changing"
+        self._transcript_text.tag_configure("partial", foreground="#888888")
+
         self._transcript_text.pack(fill=tk.BOTH, expand=True, side=tk.TOP)
         scrollbar.pack(fill=tk.Y, side=tk.RIGHT)
-
-        ttk.Separator(self._root, orient=tk.HORIZONTAL).pack(fill=tk.X, side=tk.TOP)
-
-        # ---- Current partial area (bottom, fixed height) ----
-        partial_font = ("TkDefaultFont", _FONT_PARTIAL)
-        self._partial_text = tk.Text(
-            self._root,
-            font=partial_font,
-            wrap=tk.WORD,
-            state=tk.DISABLED,
-            relief=tk.FLAT,
-            borderwidth=0,
-            padx=12,
-            pady=10,
-            height=_PARTIAL_LINES,
-            bg="#fafafa",
-            fg="#888888",
-            selectbackground="#c0c0c0",
-        )
-        self._partial_text.pack(fill=tk.X, side=tk.BOTTOM)
 
         # ---- Window close → stop ----
         self._root.protocol("WM_DELETE_WINDOW", self._on_window_close)
@@ -210,7 +190,20 @@ class WindowRenderer:
         except tk.TclError:
             return
 
-        for event in self._ui.drain():
+        events = self._deferred_events + self._ui.drain()
+        self._deferred_events = []
+        ready_events: list[tuple] = []
+        saw_partial = False
+        for event in events:
+            kind = event[0]
+            if kind == "final" and saw_partial:
+                self._deferred_events = events[len(ready_events) :]
+                break
+            if kind == "partial":
+                saw_partial = True
+            ready_events.append(event)
+
+        for event in ready_events:
             kind = event[0]
             if kind == "status":
                 self._apply_status(event[1])
@@ -233,16 +226,25 @@ class WindowRenderer:
             self._status_label.configure(foreground="#555555")
 
     def _apply_partial(self, text: str, started_at: datetime | None) -> None:
-        ts = f"[{started_at:%H:%M:%S}] " if started_at else ""
-        self._partial_text.configure(state=tk.NORMAL)
-        self._partial_text.delete("1.0", tk.END)
-        self._partial_text.insert("1.0", f"{ts}{text}")
-        self._partial_text.configure(state=tk.DISABLED)
+        self._transcript_text.configure(state=tk.NORMAL)
+        # Remove any existing partial text (located by tag, not by mark —
+        # Text widget END indices are virtual and don't survive insert/delete
+        # the way marks do)
+        ranges = self._transcript_text.tag_ranges("partial")
+        if ranges:
+            self._transcript_text.delete(str(ranges[0]), str(ranges[-1]))
+        self._transcript_text.insert(tk.END, text, "partial")
+        self._transcript_text.see(tk.END)
+        self._transcript_text.configure(state=tk.DISABLED)
 
     def _apply_final(self, text: str, started_at: datetime | None) -> None:
-        ts = f"[{started_at:%H:%M:%S}] " if started_at else ""
         self._transcript_text.configure(state=tk.NORMAL)
-        self._transcript_text.insert(tk.END, f"{ts}{text}\n")
+        # Remove the live partial (tag-based, reliable) and replace with
+        # finalized text
+        ranges = self._transcript_text.tag_ranges("partial")
+        if ranges:
+            self._transcript_text.delete(str(ranges[0]), str(ranges[-1]))
+        self._transcript_text.insert(tk.END, f"{text}\n")
         # Bound history lines
         line_count = int(self._transcript_text.index("end-1c").split(".")[0])
         if line_count > _MAX_HISTORY_LINES:
@@ -251,8 +253,3 @@ class WindowRenderer:
             self._transcript_text.delete("1.0", f"{extra + 1}.0")
         self._transcript_text.see(tk.END)  # auto-scroll
         self._transcript_text.configure(state=tk.DISABLED)
-
-        # Clear the partial area now that the utterance is finalized
-        self._partial_text.configure(state=tk.NORMAL)
-        self._partial_text.delete("1.0", tk.END)
-        self._partial_text.configure(state=tk.DISABLED)
