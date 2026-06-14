@@ -12,26 +12,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
-        // Build the window
+        // Build a borderless floating window — no title bar, full content
+        // area. Draggable by background, resizable, with standard shadow.
         let window = NSWindow(
             contentRect: NSRect(x: 0, y: 0, width: 800, height: 500),
-            styleMask: [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView],
+            styleMask: [.borderless, .resizable],
             backing: .buffered,
             defer: false
         )
-        window.title = "LiveCaption"
         window.level = .floating
         window.delegate = self
         window.center()
-        // Hide the title bar entirely — clean caption overlay look.
-        // Keep .titled so the window retains its shadow and can be dragged
-        // by the background.
-        window.titleVisibility = .hidden
-        window.titlebarAppearsTransparent = true
         window.isMovableByWindowBackground = true
-        window.standardWindowButton(.closeButton)?.isHidden = true
-        window.standardWindowButton(.miniaturizeButton)?.isHidden = true
-        window.standardWindowButton(.zoomButton)?.isHidden = true
+        window.hasShadow = true
         // .floating windows don't get an app dock tile; make one so Cmd-Tab works
         NSApp.setActivationPolicy(.regular)
 
