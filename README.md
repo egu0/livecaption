@@ -2,7 +2,7 @@
 
 # livecaption
 
-macOS 本地实时英文转录 + 中文翻译的命令行工具，无 UI，输出到终端或文本文件。
+macOS 本地实时英文转录 + 中文翻译的命令行工具。支持终端输出、文本文件、以及原生 macOS 字幕浮窗。
 
 ![livecaption 演示：实时转录、S1/S2 说话人分离（不同颜色）、two-pass 纠偏（红色删除线为纠掉的词、绿色为纠正后的词）与逐句中文翻译](docs/demo.png)
 
@@ -19,6 +19,7 @@ ASR 和翻译都跑 Apple GPU（统一内存）；VAD 把静音段挡在 encoder
 - Apple Silicon
 - [uv](https://docs.astral.sh/uv/)
 - 仅 `system` / `both` 音源需要：Swift 5.9+（编译 audiotee）
+- 仅字幕浮窗模式需要：Swift 5.9+（编译 livecaption-window）
 
 ## 安装
 
@@ -26,6 +27,8 @@ ASR 和翻译都跑 Apple GPU（统一内存）；VAD 把静音段挡在 encoder
 uv sync
 # 仅在需要捕获会议/系统音频时，编译 audiotee：
 bash scripts/build_audiotee.sh
+# 仅在需要字幕浮窗时，编译原生窗口：
+bash scripts/build_caption_window.sh
 ```
 
 首次运行会自动从 Hugging Face 下载 ASR（约 1.2GB）、Silero VAD（很小）、说话人分离模型 Sortformer（约 225MB，默认开启，`--no-diarize` 可关）和翻译模型（约 2GB）。
@@ -69,6 +72,24 @@ uv run livecaption --theme light
 
 # 监控 MLX 统一内存占用（终端底部状态行显示 active/cache/peak；默认关闭，诊断用）
 uv run livecaption --source mic --mem
+```
+
+### 字幕浮窗模式
+
+Swift 原生 macOS 字幕窗口：borderless 浮动窗口 + 系统音频 → 实时字幕，ESC 退出。无翻译、无说话人分离，适合会议/视频时叠加观看。
+
+```bash
+# 编译 Swift 原生窗口（首次）
+bash scripts/build_caption_window.sh
+
+# 启动字幕浮窗
+uv run livecaption-window
+```
+
+窗口记忆上次位置和尺寸；可设为 alias 方便启动：
+
+```bash
+alias lc='cd ~/CodingSpace/projects/livecaption && uv run livecaption-window'
 ```
 
 终端里：底部灰色行是实时中间结果；定稿句向上滚动为原文，下方是译文（加粗或彩色，取决于主题）。说话人 S1–S4 各用一种颜色便于辨认。
