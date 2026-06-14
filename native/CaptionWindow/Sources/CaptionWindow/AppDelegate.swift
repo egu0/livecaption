@@ -7,15 +7,30 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     private var window: NSWindow?
     private var eventMonitor: Any?
 
+    private static let savedFrameKey = "captionWindowFrame"
+
     init(state: CaptionState) {
         self.state = state
     }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        // Restore saved frame, or use a sensible default
+        let defaultFrame = NSRect(x: 0, y: 0, width: 800, height: 100)
+        let frame: NSRect = {
+            if let saved = UserDefaults.standard.string(forKey: Self.savedFrameKey) {
+                let rect = NSRectFromString(saved)
+                // Guard against zero / negative dimensions (corrupted save)
+                if rect.size.width >= 200 && rect.size.height >= 40 {
+                    return rect
+                }
+            }
+            return defaultFrame
+        }()
+
         // Build a borderless floating window — no title bar, full content
         // area. Draggable by background, resizable, with standard shadow.
         let window = NSWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 800, height: 100),
+            contentRect: frame,
             styleMask: [.borderless, .resizable],
             backing: .buffered,
             defer: false
@@ -23,7 +38,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         window.level = .floating
         window.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
         window.delegate = self
-        window.center()
+        if UserDefaults.standard.string(forKey: Self.savedFrameKey) == nil {
+            window.center()  // first launch only — center on screen
+        }
         window.isMovableByWindowBackground = true
         window.hasShadow = true
         window.isOpaque = false
@@ -93,6 +110,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         if let monitor = eventMonitor {
             NSEvent.removeMonitor(monitor)
             eventMonitor = nil
+        }
+        // Persist the current frame so the next launch restores it
+        if let w = window {
+            UserDefaults.standard.set(NSStringFromRect(w.frame), forKey: Self.savedFrameKey)
         }
         NSApplication.shared.terminate(nil)
     }
