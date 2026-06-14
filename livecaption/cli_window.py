@@ -12,6 +12,7 @@ to the main CLI pipeline (SystemAudioSource + AsrWorker).
 
 from __future__ import annotations
 
+import contextlib
 import os
 import signal
 import sys
@@ -57,10 +58,8 @@ def main(
         # Schedule Tk shutdown from the main thread; if the window is already gone,
         # root.quit via after is harmless
         if window is not None:
-            try:
+            with contextlib.suppress(Exception):
                 window.close()
-            except Exception:
-                pass
         # Restore default handler: a second Ctrl-C force-exits
         signal.signal(signal.SIGINT, signal.default_int_handler)
 
@@ -73,7 +72,7 @@ def main(
         window.set_status("Loading ASR model…")
         # Force a paint so "Loading ASR model…" is visible before the long load
         window._root.update()  # type: ignore[attr-defined]
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001
         print(f"Fatal: could not create window: {e}", file=sys.stderr)
         raise typer.Exit(1) from None
 
@@ -85,7 +84,7 @@ def main(
         print(f"Fatal: {e}", file=sys.stderr)
         window.show()  # let the user see the error before closing
         raise typer.Exit(1) from None
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001
         window.set_status(f"Fatal: {e}")
         print(f"Fatal: {e}", file=sys.stderr)
         window.show()
@@ -112,10 +111,8 @@ def main(
         window.set_status("Error: ASR worker stopped unexpectedly")
         stop_event.set()
         if window is not None:
-            try:
+            with contextlib.suppress(Exception):
                 window.close()
-            except Exception:
-                pass
 
     worker = AsrWorker(
         recognizer,

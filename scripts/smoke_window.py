@@ -101,19 +101,19 @@ def test_window_entry_point_func_exists():
 
 def test_window_entry_point_no_translate_import():
     """The window entry point must not import or construct Translator."""
-    src = open(
+    cli_path = (
         Path(__file__).resolve().parent.parent / "livecaption" / "cli_window.py"
-    ).read()
+    )
+    with open(cli_path) as f:
+        src = f.read()
     tree = ast.parse(src)
     # Check that translate.py is never imported
     for node in ast.walk(tree):
-        if isinstance(node, ast.ImportFrom):
-            if node.module == "livecaption.translate" or (
-                node.module == "translate" and node.level == 1
-            ):
-                raise AssertionError(
-                    "cli_window.py must not import translate"
-                )
+        if isinstance(node, ast.ImportFrom) and (
+            node.module == "livecaption.translate"
+            or (node.module == "translate" and node.level == 1)
+        ):
+            raise AssertionError("cli_window.py must not import translate")
         if isinstance(node, ast.Import):
             for alias in node.names:
                 if "translate" in alias.name:
@@ -124,9 +124,11 @@ def test_window_entry_point_no_translate_import():
 
 def test_window_entry_point_no_diarize():
     """Window mode always passes diarize=False to build_recognizer."""
-    src = open(
+    cli_path = (
         Path(__file__).resolve().parent.parent / "livecaption" / "cli_window.py"
-    ).read()
+    )
+    with open(cli_path) as f:
+        src = f.read()
     tree = ast.parse(src)
     found = False
     for node in ast.walk(tree):
@@ -149,14 +151,17 @@ def test_window_entry_point_no_diarize():
 
 def test_window_entry_point_no_mic_source():
     """Window mode must not import or construct MicSource."""
-    src = open(
+    cli_path = (
         Path(__file__).resolve().parent.parent / "livecaption" / "cli_window.py"
-    ).read()
+    )
+    with open(cli_path) as f:
+        src = f.read()
     tree = ast.parse(src)
     for node in ast.walk(tree):
-        if isinstance(node, ast.ImportFrom) and node.module:
-            if "MicSource" in [a.name for a in node.names]:
-                raise AssertionError("cli_window.py must not import MicSource")
+        if isinstance(node, ast.ImportFrom) and node.module and "MicSource" in [
+            a.name for a in node.names
+        ]:
+            raise AssertionError("cli_window.py must not import MicSource")
 
 
 if __name__ == "__main__":
