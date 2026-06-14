@@ -15,7 +15,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         // Build a borderless floating window — no title bar, full content
         // area. Draggable by background, resizable, with standard shadow.
         let window = NSWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 800, height: 100),
+            contentRect: NSRect(x: 0, y: 0, width: 800, height: 120),
             styleMask: [.borderless, .resizable],
             backing: .buffered,
             defer: false
@@ -33,14 +33,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         // .floating windows don't get an app dock tile; make one so Cmd-Tab works
         NSApp.setActivationPolicy(.regular)
 
-        // Vibrancy backing with system-consistent rounded corners
+        // Vibrancy backing
         let visualEffect = NSVisualEffectView()
         visualEffect.blendingMode = .behindWindow
         visualEffect.state = .active
         visualEffect.material = .hudWindow
-        visualEffect.wantsLayer = true
-        visualEffect.layer?.cornerRadius = 12
-        visualEffect.layer?.masksToBounds = true
 
         // Host SwiftUI content
         let hostingView = NSHostingView(rootView: ContentView(state: state))
@@ -61,6 +58,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         ])
 
         window.contentView = visualEffect
+        // Clip the entire window (including the vibrancy blur pass) to
+        // system-consistent rounded corners.  Applying cornerRadius to the
+        // visualEffect view alone only clips subviews — the .behindWindow
+        // blur is composited by the window server and ignores view-layer
+        // masking, which left a white rectangular halo behind the curves.
+        window.contentView?.wantsLayer = true
+        window.contentView?.layer?.cornerRadius = 12
+        window.contentView?.layer?.masksToBounds = true
         self.window = window
 
         // ESC key → terminate
