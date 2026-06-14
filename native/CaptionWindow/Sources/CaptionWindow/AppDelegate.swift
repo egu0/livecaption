@@ -33,14 +33,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         // .floating windows don't get an app dock tile; make one so Cmd-Tab works
         NSApp.setActivationPolicy(.regular)
 
-        // Vibrancy backing with system-consistent rounded corners
+        // Rounded-corner container — a plain NSView clips cleanly without
+        // fighting the window server's vibrancy compositing
+        let container = NSView()
+        container.wantsLayer = true
+        container.layer?.cornerRadius = 12
+        container.layer?.masksToBounds = true
+
+        // Vibrancy backing — fills the container to get rounded corners
         let visualEffect = NSVisualEffectView()
         visualEffect.blendingMode = .behindWindow
         visualEffect.state = .active
         visualEffect.material = .hudWindow
-        visualEffect.wantsLayer = true
-        visualEffect.layer?.cornerRadius = 12
-        visualEffect.layer?.masksToBounds = true
+        visualEffect.translatesAutoresizingMaskIntoConstraints = false
+        container.addSubview(visualEffect)
 
         // Host SwiftUI content
         let hostingView = NSHostingView(rootView: ContentView(state: state))
@@ -54,13 +60,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         hostingView.setContentCompressionResistancePriority(.defaultLow, for: .vertical)
         visualEffect.addSubview(hostingView)
         NSLayoutConstraint.activate([
+            visualEffect.topAnchor.constraint(equalTo: container.topAnchor),
+            visualEffect.leadingAnchor.constraint(equalTo: container.leadingAnchor),
+            visualEffect.trailingAnchor.constraint(equalTo: container.trailingAnchor),
+            visualEffect.bottomAnchor.constraint(equalTo: container.bottomAnchor),
             hostingView.topAnchor.constraint(equalTo: visualEffect.topAnchor),
             hostingView.leadingAnchor.constraint(equalTo: visualEffect.leadingAnchor),
             hostingView.trailingAnchor.constraint(equalTo: visualEffect.trailingAnchor),
             hostingView.bottomAnchor.constraint(equalTo: visualEffect.bottomAnchor),
         ])
 
-        window.contentView = visualEffect
+        window.contentView = container
         self.window = window
 
         // ESC key → terminate
