@@ -9,6 +9,9 @@ wheels/
 # Virtual environments
 .venv
 
+# Swift 编译产物
+.build/
+
 # audiotee 编译产物（用 scripts/build_audiotee.sh 重建）
 bin/
 .vendor/

@@ -14,6 +14,8 @@ uv run livecaption --source mic|system|both  # 运行；首次自动下载模型
 uv run livecaption --source file --file x.wav --out y.md  # 转录音频文件，跑完即退出（全流程端到端测试入口）
 uv run livecaption --list-devices            # 列出麦克风设备
 bash scripts/build_audiotee.sh               # 编译系统音频捕获二进制（仅 system/both 需要）
+bash scripts/build_caption_window.sh          # 编译 Swift 原生字幕窗口二进制（仅 window 模式需要）
+uv run livecaption-window                     # 运行窗口模式：系统音频 → Swift 原生字幕窗口
 
 # 验证：本项目无正式测试框架，用这些手动冒烟脚本
 uv run python scripts/smoke_asr.py           # ASR 端到端：加载模型 + 解码自带 test wav，对照离线结果
@@ -42,7 +44,10 @@ AudioSource(后台)  ──queue──▶  AsrWorker(线程)  ──final 句─
 - **`render.py`** — `Renderer`(rich.Live 终端，底部活动区刷 partial、上方滚动 final) + `FileWriter`(追加写文件)。配色按 `--theme`(auto/light/dark) 分三套：单套固定色总会在某种背景下隐身，所以**只有译文真正随背景变**(default=默认前景+加粗"不赌颜色"，dark=亮青，light=深青蓝)，其余元素用对两种背景都中性可见的固定样式(grey50 中灰、说话人调色板)——**一律不用 `dim`**(dim 相对背景降亮度，两种背景都偏淡，正是用户反馈"看不清"的根因)。说话人 S1–S4 各一色(`_SPEAKER_PALETTE`，按主题分套且刻意避开青系以防与译文撞色、避开绿系以防与 diff 新词撞色；S1 品红/S2 蓝/S3 橙/S4 红跨主题保持同色相)。diff 配色：纠掉的词用中灰删除线（被取代的内容不该比正文显眼；红色曾与 S4 标签混淆），新词绿色。auto 从 `COLORFGBG` 末段探测背景，探测不到回退 default。
 - **`cli.py`** — 装配层：解析参数 → 建音频源 → 每个源一个 recognizer + AsrWorker → 回调接到 renderer/writer/translator → 等 Ctrl-C。
 - **`config.py`** — 所有可调参数集中在此（端点 rule、采样参数、上下文句数、prompt 模版）。
-- **`models.py`** — 模型下载/文件解析、audiotee 二进制定位。
+- **`models.py`** — 模型下载/文件解析、audiotee 及 caption-window 二进制定位。
+- **`swift_window.py`** — `SwiftCaptionWindow`：将 ASR 回调转为 JSON Lines，经 subprocess stdin 发给 Swift 原生 macOS 字幕窗口。替代了旧 tkinter `window.py`。
+- **`cli_window.py`** — 窗口模式 CLI 入口（`livecaption-window`）：仅系统音频、无翻译、无 diar，装配 audiotee → ASR → SwiftCaptionWindow。
+- **`native/CaptionWindow/`** — Swift 包：使用 SwiftUI + AppKit 的原生 macOS 字幕窗口，`bin/livecaption-window` 为其编译产物。
 
 ### 关键设计决策（动代码前必读）
 

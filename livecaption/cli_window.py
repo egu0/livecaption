@@ -23,8 +23,8 @@ import typer
 from . import config
 from .asr import AsrWorker, build_recognizer
 from .audio import SystemAudioSource
-from .models import resolve_audiotee
-from .window import WindowRenderer
+from .models import resolve_audiotee, resolve_caption_window
+from .swift_window import SwiftCaptionWindow
 
 # Turn off huggingface_hub download progress bars (they spam the terminal even when
 # the model is already cached); download failures still raise.
@@ -45,10 +45,14 @@ def main(
     include_pid: int | None = typer.Option(
         None, help="Capture only this process PID's audio (e.g. Zoom's PID)"
     ),
+    caption_window: str | None = typer.Option(
+        None, "--caption-window",
+        help="Path to the livecaption-window binary (default: auto-resolve from ./bin or PATH)",
+    ),
 ) -> None:
     """LiveCaption Window — system audio transcription in a desktop window."""
     stop_event = threading.Event()
-    window: WindowRenderer | None = None
+    window: SwiftCaptionWindow | None = None
     worker: AsrWorker | None = None
     source: SystemAudioSource | None = None
 
@@ -65,18 +69,19 @@ def main(
 
     signal.signal(signal.SIGINT, _on_signal)
 
-    # ---- Phase 1: Create window (so the user sees something immediately) ----
+    # ---- Phase 1: Resolve Swift window binary ----
     try:
-        window = WindowRenderer()
-        window.set_stop_event(stop_event)
-        window.set_status("Loading ASR model…")
-        # Force a paint so "Loading ASR model…" is visible before the long load
-        window._root.update()  # type: ignore[attr-defined]
-    except Exception as e:  # noqa: BLE001
-        print(f"Fatal: could not create window: {e}", file=sys.stderr)
+        caption_bin = resolve_caption_window(caption_window)
+    except FileNotFoundError as e:
+        print(f"Fatal: {e}", file=sys.stderr)
         raise typer.Exit(1) from None
 
-    # ---- Phase 2: Resolve audiotee ----
+    # ---- Phase 2: Create window (native Swift via subprocess) ----
+    window = SwiftCaptionWindow(caption_bin)
+    window.set_stop_event(stop_event)
+    window.set_status("Loading ASR model…")
+
+    # ---- Phase 3: Resolve audiotee ----
     try:
         audiotee_bin = resolve_audiotee(audiotee)
     except FileNotFoundError as e:
@@ -90,7 +95,7 @@ def main(
         window.show()
         raise typer.Exit(1) from None
 
-    # ---- Phase 3: Load ASR model ----
+    # ---- Phase 4: Load ASR model ----
     try:
         recognizer = build_recognizer(
             asr_model, asr_lang, diarize=False,
@@ -102,7 +107,7 @@ def main(
         window.show()
         raise typer.Exit(1) from None
 
-    # ---- Phase 4: Build pipeline ----
+    # ---- Phase 5: Build pipeline ----
     pids = [include_pid] if include_pid is not None else None
     source = SystemAudioSource(audiotee_bin, label="them", include_pids=pids)
 
@@ -123,17 +128,17 @@ def main(
         on_error=_on_error,
     )
 
-    # ---- Phase 5: Start pipeline ----
+    # ---- Phase 6: Start pipeline ----
     source.start()
     worker.start()
     window.set_status("● Listening")
 
-    # ---- Phase 6: Run until stop ----
+    # ---- Phase 7: Run until stop ----
     # The window main loop blocks here. The window-close button sets stop_event
     # and calls root.quit(), which unblocks mainloop.
     window.show()
 
-    # ---- Phase 7: Cleanup ----
+    # ---- Phase 8: Cleanup ----
     window.set_status("Stopping…")
     if source is not None:
         source.stop()

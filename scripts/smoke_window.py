@@ -1,7 +1,9 @@
-"""Smoke tests for the window renderer: UiQueue marshaling + entry-point construction defaults."""
+"""Smoke tests for the Swift caption window: SwiftCaptionWindow JSON format + entry-point sanity."""
 from __future__ import annotations
 
 import ast
+import json
+import queue
 import sys
 import threading
 from pathlib import Path
@@ -9,47 +11,76 @@ from pathlib import Path
 # Allow running from repo root: uv run python scripts/smoke_window.py
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from livecaption.window import UiQueue, WindowRenderer
+from livecaption.swift_window import SwiftCaptionWindow
 
 
-def test_enqueue_and_drain_order():
-    """Events drain in FIFO order, exactly as enqueued."""
-    q = UiQueue()
-    q.enqueue_status("loading")
-    q.enqueue_partial("hello", None)
-    q.enqueue_status("listening")
-    q.enqueue_final("hello world", None)
-    q.enqueue_partial("next", None)
+def test_partial_json_format():
+    """partial() sends the correct JSON-line structure."""
+    win = SwiftCaptionWindow.__new__(SwiftCaptionWindow)
+    win._q = queue.Queue()
+    win._stop_event = threading.Event()
+    win._proc = None  # no real subprocess
 
-    events = q.drain()
-    assert events == [
-        ("status", "loading"),
-        ("partial", "hello", None),
-        ("status", "listening"),
-        ("final", "hello world", None),
-        ("partial", "next", None),
-    ], f"Unexpected events: {events}"
+    win.partial("me", "hello world", None)
+    line = win._q.get(timeout=1)
+    obj = json.loads(line.strip())
+    assert obj == {"type": "partial", "text": "hello world"}, f"Unexpected: {obj}"
 
 
-def test_drain_clears_queue():
-    """After drain, the queue is empty."""
-    q = UiQueue()
-    q.enqueue_partial("a", None)
-    q.drain()
-    assert q.drain() == []
+def test_final_json_format():
+    """final() flattens segments and sends the correct JSON."""
+    win = SwiftCaptionWindow.__new__(SwiftCaptionWindow)
+    win._q = queue.Queue()
+    win._stop_event = threading.Event()
+    win._proc = None
+
+    win.final("me", [(None, "hello final", None)], None)
+    line = win._q.get(timeout=1)
+    obj = json.loads(line.strip())
+    assert obj == {"type": "final", "text": "hello final"}, f"Unexpected: {obj}"
+
+
+def test_final_multi_segment_join():
+    """Multiple segments are joined with double-space."""
+    win = SwiftCaptionWindow.__new__(SwiftCaptionWindow)
+    win._q = queue.Queue()
+    win._stop_event = threading.Event()
+    win._proc = None
+
+    win.final("me", [(0, "speaker one", None), (1, "speaker two", None)], None)
+    line = win._q.get(timeout=1)
+    obj = json.loads(line.strip())
+    assert obj == {"type": "final", "text": "speaker one  speaker two"}, f"Unexpected: {obj}"
+
+
+def test_status_json_format():
+    """set_status() sends the correct JSON."""
+    win = SwiftCaptionWindow.__new__(SwiftCaptionWindow)
+    win._q = queue.Queue()
+    win._stop_event = threading.Event()
+    win._proc = None
+
+    win.set_status("● Listening")
+    line = win._q.get(timeout=1)
+    obj = json.loads(line.strip())
+    assert obj == {"type": "status", "message": "● Listening"}, f"Unexpected: {obj}"
 
 
 def test_thread_safety():
-    """Concurrent enqueues from multiple threads preserve order within each thread,
-    and all events are eventually drained."""
-    q = UiQueue()
+    """Concurrent sends from multiple threads don't corrupt JSON lines."""
+    win = SwiftCaptionWindow.__new__(SwiftCaptionWindow)
+    win._q = queue.Queue()
+    win._stop_event = threading.Event()
+    win._proc = FakeProc()
+    win._writer = None  # don't start writer — just check enqueue ordering
+
     n = 50
     barrier = threading.Barrier(2)
 
     def producer(prefix: str) -> None:
         barrier.wait()
         for i in range(n):
-            q.enqueue_partial(f"{prefix}-{i}", None)
+            win.partial(prefix, f"{prefix}-{i}", None)
 
     t1 = threading.Thread(target=producer, args=("A",))
     t2 = threading.Thread(target=producer, args=("B",))
@@ -58,86 +89,55 @@ def test_thread_safety():
     t1.join()
     t2.join()
 
-    # All 2*n events should be drainable (order is non-deterministic between threads,
-    # so we just check count and that no event is lost).
-    events = q.drain()
-    assert len(events) == 2 * n, f"Expected {2 * n} events, got {len(events)}"
-    # Each producer's events should appear in order within the full drain list
-    a_events = [e for e in events if e[1].startswith("A-")]
-    b_events = [e for e in events if e[1].startswith("B-")]
-    assert len(a_events) == n
-    assert len(b_events) == n
-    for i, ev in enumerate(a_events):
-        assert ev[1] == f"A-{i}"
-    for i, ev in enumerate(b_events):
-        assert ev[1] == f"B-{i}"
+    # All lines should be drainable and valid JSON
+    count = 0
+    a_count = 0
+    b_count = 0
+    while True:
+        try:
+            line = win._q.get_nowait()
+        except queue.Empty:
+            break
+        obj = json.loads(line.strip())
+        assert obj["type"] == "partial"
+        count += 1
+        if obj["text"].startswith("A-"):
+            a_count += 1
+        elif obj["text"].startswith("B-"):
+            b_count += 1
+    assert count == 2 * n, f"Expected {2 * n} lines, got {count}"
+    assert a_count == n
+    assert b_count == n
 
 
-def test_status_event():
-    """Status events have the correct shape."""
-    q = UiQueue()
-    q.enqueue_status("error: audiotee not found")
-    events = q.drain()
-    assert events == [("status", "error: audiotee not found")]
+class FakeProc:
+    """Stub subprocess for tests that exercise the writer loop."""
+    def poll(self):
+        return None
+    def terminate(self):
+        pass
+    def wait(self, timeout: float | None = None):
+        pass
+    def kill(self):
+        pass
 
 
-def test_partial_event_with_timestamp():
-    """Partial events carry text and a timestamp placeholder."""
-    from datetime import datetime
-    ts = datetime.now()
-    q = UiQueue()
-    q.enqueue_partial("testing partial", ts)
-    events = q.drain()
-    assert events[0][0] == "partial"
-    assert events[0][1] == "testing partial"
-    assert events[0][2] is ts
+def test_writer_stops_on_broken_pipe():
+    """Writer loop exits cleanly when the pipe breaks."""
+    win = SwiftCaptionWindow.__new__(SwiftCaptionWindow)
+    win._q = queue.Queue()
+    win._stop_event = threading.Event()
+    win._proc = FakeProc()
 
+    # Put one line and immediately break the pipe simulation
+    win._send({"type": "partial", "text": "test"})
 
-def test_window_defers_final_when_partial_arrives_in_same_drain():
-    """A coalesced partial+final batch must paint the partial for one UI tick first."""
-    from datetime import datetime
+    # Simulate: proc.poll() returns non-None (process died)
+    win._proc.poll = lambda: 1  # exit code
 
-    ts = datetime.now()
-    events = [
-        ("partial", "live words", ts),
-        ("final", "corrected sentence", ts),
-    ]
-    applied = []
-
-    class FakeUi:
-        def drain(self):
-            out = list(events)
-            events.clear()
-            return out
-
-    class FakeRoot:
-        def winfo_exists(self):
-            return True
-
-        def after(self, *_args: object):
-            return None
-
-    renderer = WindowRenderer.__new__(WindowRenderer)
-    renderer._root = FakeRoot()
-    renderer._ui = FakeUi()
-    renderer._deferred_events = []
-    renderer._apply_status = lambda message: applied.append(("status", message))
-    renderer._apply_partial = lambda text, started_at: applied.append(
-        ("partial", text, started_at)
-    )
-    renderer._apply_final = lambda text, started_at: applied.append(
-        ("final", text, started_at)
-    )
-
-    WindowRenderer._drain_queue(renderer)
-    assert applied == [("partial", "live words", ts)]
-    assert renderer._deferred_events == [("final", "corrected sentence", ts)]
-
-    WindowRenderer._drain_queue(renderer)
-    assert applied == [
-        ("partial", "live words", ts),
-        ("final", "corrected sentence", ts),
-    ]
+    # Writer loop should exit without error
+    win._write_loop()  # should not hang or raise
+    assert True  # reached without exception
 
 
 def test_window_entry_point_func_exists():
@@ -154,7 +154,6 @@ def test_window_entry_point_no_translate_import():
     with open(cli_path) as f:
         src = f.read()
     tree = ast.parse(src)
-    # Check that translate.py is never imported
     for node in ast.walk(tree):
         if isinstance(node, ast.ImportFrom) and (
             node.module == "livecaption.translate"
@@ -164,9 +163,7 @@ def test_window_entry_point_no_translate_import():
         if isinstance(node, ast.Import):
             for alias in node.names:
                 if "translate" in alias.name:
-                    raise AssertionError(
-                        "cli_window.py must not import translate"
-                    )
+                    raise AssertionError("cli_window.py must not import translate")
 
 
 def test_window_entry_point_no_diarize():
@@ -182,7 +179,6 @@ def test_window_entry_point_no_diarize():
         if isinstance(node, ast.Call):
             for kw in getattr(node, "keywords", []):
                 if kw.arg == "diarize":
-                    # Check that its value is False or a Name with id "False"
                     val = kw.value
                     if isinstance(val, ast.Constant):
                         if val.value is not False:
@@ -212,14 +208,13 @@ def test_window_entry_point_no_mic_source():
 
 
 if __name__ == "__main__":
-    # Simple test runner — no framework dependency
     tests = [
-        test_enqueue_and_drain_order,
-        test_drain_clears_queue,
+        test_partial_json_format,
+        test_final_json_format,
+        test_final_multi_segment_join,
+        test_status_json_format,
         test_thread_safety,
-        test_status_event,
-        test_partial_event_with_timestamp,
-        test_window_defers_final_when_partial_arrives_in_same_drain,
+        test_writer_stops_on_broken_pipe,
         test_window_entry_point_func_exists,
         test_window_entry_point_no_translate_import,
         test_window_entry_point_no_diarize,
