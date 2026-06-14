@@ -15,7 +15,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         // Build a borderless floating window — no title bar, full content
         // area. Draggable by background, resizable, with standard shadow.
         let window = NSWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 800, height: 500),
+            contentRect: NSRect(x: 0, y: 0, width: 800, height: 200),
             styleMask: [.borderless, .resizable],
             backing: .buffered,
             defer: false
@@ -37,6 +37,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         // Host SwiftUI content
         let hostingView = NSHostingView(rootView: ContentView(state: state))
         hostingView.translatesAutoresizingMaskIntoConstraints = false
+        // Let the window frame dictate size, not the SwiftUI intrinsic size
+        hostingView.setContentHuggingPriority(.defaultLow, for: .vertical)
+        hostingView.setContentHuggingPriority(.defaultLow, for: .horizontal)
         visualEffect.addSubview(hostingView)
         NSLayoutConstraint.activate([
             hostingView.topAnchor.constraint(equalTo: visualEffect.topAnchor),
