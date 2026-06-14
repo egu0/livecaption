@@ -227,7 +227,7 @@ class WindowRenderer:
         # Color-code status: green for listening, red for errors
         if message.lower().startswith("error") or message.lower().startswith("fatal"):
             self._status_label.configure(foreground="#cc0000")
-        elif message.lower().startswith("listening"):
+        elif "listening" in message.lower():
             self._status_label.configure(foreground="#008800")
         else:
             self._status_label.configure(foreground="#555555")
