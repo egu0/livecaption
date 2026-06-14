@@ -25,14 +25,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         window.center()
         window.isMovableByWindowBackground = true
         window.hasShadow = true
+        window.isOpaque = false
+        window.backgroundColor = .clear
+        // Minimum size: wide enough to be legible, tall enough to show the status bar
+        window.minSize = NSSize(width: 200, height: 40)
         // .floating windows don't get an app dock tile; make one so Cmd-Tab works
         NSApp.setActivationPolicy(.regular)
 
-        // Vibrancy backing
+        // Vibrancy backing with system-consistent rounded corners
         let visualEffect = NSVisualEffectView()
         visualEffect.blendingMode = .behindWindow
         visualEffect.state = .active
         visualEffect.material = .hudWindow
+        visualEffect.wantsLayer = true
+        visualEffect.layer?.cornerRadius = 12
+        visualEffect.layer?.masksToBounds = true
 
         // Host SwiftUI content
         let hostingView = NSHostingView(rootView: ContentView(state: state))
