@@ -18,6 +18,7 @@ dependencies = [
 
 [project.scripts]
 livecaption = "livecaption.cli:run"
+livecaption-window = "livecaption.cli_window:run"
 
 [build-system]
 requires = ["hatchling"]
