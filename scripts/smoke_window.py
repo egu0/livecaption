@@ -1,6 +1,7 @@
 """Smoke tests for the window renderer: UiQueue marshaling + entry-point construction defaults."""
 from __future__ import annotations
 
+import ast
 import sys
 import threading
 from pathlib import Path
@@ -92,6 +93,72 @@ def test_partial_event_with_timestamp():
     assert events[0][2] is ts
 
 
+def test_window_entry_point_func_exists():
+    """cli_window.main is importable and callable (Typer function)."""
+    from livecaption.cli_window import main as window_main
+    assert callable(window_main), "main should be callable"
+
+
+def test_window_entry_point_no_translate_import():
+    """The window entry point must not import or construct Translator."""
+    src = open(
+        Path(__file__).resolve().parent.parent / "livecaption" / "cli_window.py"
+    ).read()
+    tree = ast.parse(src)
+    # Check that translate.py is never imported
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ImportFrom):
+            if node.module == "livecaption.translate" or (
+                node.module == "translate" and node.level == 1
+            ):
+                raise AssertionError(
+                    "cli_window.py must not import translate"
+                )
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                if "translate" in alias.name:
+                    raise AssertionError(
+                        "cli_window.py must not import translate"
+                    )
+
+
+def test_window_entry_point_no_diarize():
+    """Window mode always passes diarize=False to build_recognizer."""
+    src = open(
+        Path(__file__).resolve().parent.parent / "livecaption" / "cli_window.py"
+    ).read()
+    tree = ast.parse(src)
+    found = False
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Call):
+            for kw in getattr(node, "keywords", []):
+                if kw.arg == "diarize":
+                    # Check that its value is False or a Name with id "False"
+                    val = kw.value
+                    if isinstance(val, ast.Constant):
+                        if val.value is not False:
+                            raise AssertionError(
+                                f"diarize must be False, got {val.value}"
+                            )
+                        found = True
+                    elif isinstance(val, ast.Name) and val.id == "False":
+                        found = True
+    if not found:
+        raise AssertionError("build_recognizer diarize= not found in cli_window.py")
+
+
+def test_window_entry_point_no_mic_source():
+    """Window mode must not import or construct MicSource."""
+    src = open(
+        Path(__file__).resolve().parent.parent / "livecaption" / "cli_window.py"
+    ).read()
+    tree = ast.parse(src)
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ImportFrom) and node.module:
+            if "MicSource" in [a.name for a in node.names]:
+                raise AssertionError("cli_window.py must not import MicSource")
+
+
 if __name__ == "__main__":
     # Simple test runner — no framework dependency
     tests = [
@@ -100,6 +167,10 @@ if __name__ == "__main__":
         test_thread_safety,
         test_status_event,
         test_partial_event_with_timestamp,
+        test_window_entry_point_func_exists,
+        test_window_entry_point_no_translate_import,
+        test_window_entry_point_no_diarize,
+        test_window_entry_point_no_mic_source,
     ]
     passed = 0
     for t in tests:
