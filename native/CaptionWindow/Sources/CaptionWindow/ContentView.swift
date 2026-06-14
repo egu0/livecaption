@@ -22,7 +22,7 @@ struct ContentView: View {
 
             Divider()
 
-            // ---- Transcript area ----
+            // ---- Transcript area (top-to-bottom, text selectable) ----
             ScrollViewReader { proxy in
                 ScrollView {
                     VStack(alignment: .leading, spacing: 0) {
@@ -44,7 +44,6 @@ struct ContentView: View {
                     }
                     .padding(12)
                 }
-                .defaultScrollAnchor(.bottom)
                 .onChange(of: state.finalLines.count) {
                     proxy.scrollTo("partial-anchor", anchor: .bottom)
                 }
