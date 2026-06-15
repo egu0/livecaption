@@ -12,9 +12,12 @@ final class CaptionState {
 
     func applyStatus(_ message: String) {
         let lower = message.lowercased()
-        // Suppress model-loading chatter and the persistent "Listening" indicator;
-        // errors and lifecycle transitions (Stopping…) still appear in the transcript.
-        if lower.contains("loading") || lower.hasPrefix("asr:") || lower.contains("listening") {
+        // Suppress model-loading chatter and the persistent "Listening" indicator.
+        // Match the exact prefixes sent by cli_window.py to avoid false positives
+        // on error messages that happen to contain these substrings.
+        let isModelLoading = lower.hasPrefix("loading") || lower.hasPrefix("asr:")
+        let isListening = lower == "● listening"
+        if isModelLoading || isListening {
             return
         }
         let isError = lower.hasPrefix("error") || lower.hasPrefix("fatal")
