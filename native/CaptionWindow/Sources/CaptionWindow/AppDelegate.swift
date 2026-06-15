@@ -7,30 +7,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     private var window: NSWindow?
     private var eventMonitor: Any?
 
-    private static let savedFrameKey = "captionWindowFrame"
-
     init(state: CaptionState) {
         self.state = state
     }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
-        // Restore saved frame, or use a sensible default
-        let defaultFrame = NSRect(x: 0, y: 0, width: 800, height: 100)
-        let frame: NSRect = {
-            if let saved = UserDefaults.standard.string(forKey: Self.savedFrameKey) {
-                let rect = NSRectFromString(saved)
-                // Guard against zero / negative dimensions (corrupted save)
-                if rect.size.width >= 200 && rect.size.height >= 40 {
-                    return rect
-                }
-            }
-            return defaultFrame
-        }()
+        let size = NSSize(width: 800, height: 100)
 
         // Build a borderless floating window — no title bar, full content
         // area. Draggable by background, resizable, with standard shadow.
         let window = NSWindow(
-            contentRect: frame,
+            contentRect: NSRect(origin: .zero, size: size),
             styleMask: [.borderless, .resizable],
             backing: .buffered,
             defer: false
@@ -38,21 +25,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         window.level = .floating
         window.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
         window.delegate = self
-        if UserDefaults.standard.string(forKey: Self.savedFrameKey) == nil {
-            window.center()  // first launch only — center on screen
-        }
         window.isMovableByWindowBackground = true
         window.hasShadow = true
         window.isOpaque = false
         window.backgroundColor = .clear
-        // Minimum size: wide enough to be legible, tall enough to show the status bar
         window.minSize = NSSize(width: 200, height: 40)
+        window.contentMinSize = size
         // .floating windows don't get an app dock tile; make one so Cmd-Tab works
         NSApp.setActivationPolicy(.regular)
 
         // Rounded-corner container — a plain NSView clips cleanly without
-        // fighting the window server's vibrancy compositing
-        let container = NSView()
+        // fighting the window server's vibrancy compositing.
+        let container = NSView(frame: NSRect(origin: .zero, size: size))
         container.wantsLayer = true
         container.layer?.cornerRadius = 12
         container.layer?.masksToBounds = true
@@ -69,12 +53,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         let hostingView = NSHostingView(rootView: ContentView(state: state))
         hostingView.translatesAutoresizingMaskIntoConstraints = false
         // Let the window frame dictate size, not the SwiftUI intrinsic size.
-        // Both hugging (prefers smaller) and compression-resistance (refuses
-        // to shrink below intrinsic) must be lowered so a short contentRect
-        // height actually takes effect.
         hostingView.setContentHuggingPriority(.defaultLow, for: .vertical)
         hostingView.setContentHuggingPriority(.defaultLow, for: .horizontal)
         hostingView.setContentCompressionResistancePriority(.defaultLow, for: .vertical)
+        hostingView.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
         visualEffect.addSubview(hostingView)
         NSLayoutConstraint.activate([
             visualEffect.topAnchor.constraint(equalTo: container.topAnchor),
@@ -88,6 +70,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         ])
 
         window.contentView = container
+        // Anchor the hosting view to a minimum width so the empty SwiftUI
+        // transcript doesn't collapse the borderless window on first display.
+        hostingView.widthAnchor.constraint(greaterThanOrEqualToConstant: size.width).isActive = true
+        // Re-assert size, then center. Order matters: setFrame* after
+        // contentView swap prevents borderless windows from sizing to
+        // content fittingSize; center after setFrame so the origin sticks.
+        window.setContentSize(size)
+        window.center()
         self.window = window
 
         // ESC key → terminate
@@ -110,10 +100,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         if let monitor = eventMonitor {
             NSEvent.removeMonitor(monitor)
             eventMonitor = nil
-        }
-        // Persist the current frame so the next launch restores it
-        if let w = window {
-            UserDefaults.standard.set(NSStringFromRect(w.frame), forKey: Self.savedFrameKey)
         }
         NSApplication.shared.terminate(nil)
     }

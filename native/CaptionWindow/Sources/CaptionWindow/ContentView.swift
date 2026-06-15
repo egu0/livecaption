@@ -1,4 +1,4 @@
-// ContentView.swift — SwiftUI view hierarchy: status bar + scrollable transcript.
+// ContentView.swift — SwiftUI view hierarchy: scrollable transcript with inline status lines.
 import SwiftUI
 
 struct ContentView: View {
@@ -9,57 +9,51 @@ struct ContentView: View {
     }
 
     var body: some View {
-        VStack(spacing: 0) {
-            // ---- Status bar ----
-            HStack {
-                Text(state.statusMessage)
-                    .font(.system(size: 13))
-                    .foregroundColor(colorForStatus)
-                Spacer()
-            }
-            .padding(.horizontal, 12)
-            .padding(.vertical, 6)
-
-            Divider()
-
-            // ---- Transcript area (top-to-bottom, text selectable) ----
-            ScrollViewReader { proxy in
-                ScrollView {
-                    VStack(alignment: .leading, spacing: 0) {
-                        ForEach(state.finalLines) { line in
-                            Text(line.text)
-                                .font(.system(size: 16))
-                                .foregroundColor(.primary)
-                                .textSelection(.enabled)
-                                .frame(maxWidth: .infinity, alignment: .leading)
-                        }
-                        if let partial = state.partialText {
-                            Text(partial)
-                                .font(.system(size: 16))
-                                .foregroundColor(.secondary)
-                                .textSelection(.enabled)
-                                .frame(maxWidth: .infinity, alignment: .leading)
-                                .id("partial-anchor")
-                        }
+        ScrollViewReader { proxy in
+            ScrollView {
+                VStack(alignment: .leading, spacing: 0) {
+                    ForEach(state.statusLines) { line in
+                        Text(line.text)
+                            .font(.system(size: 12, weight: line.isError ? .medium : .regular))
+                            .foregroundColor(colorForStatus(line))
+                            .textSelection(.enabled)
+                            .frame(maxWidth: .infinity, alignment: .leading)
                     }
-                    .padding(12)
+                    ForEach(state.finalLines) { line in
+                        Text(line.text)
+                            .font(.system(size: 16))
+                            .foregroundColor(.primary)
+                            .textSelection(.enabled)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                    }
+                    if let partial = state.partialText {
+                        Text(partial)
+                            .font(.system(size: 16))
+                            .foregroundColor(.secondary)
+                            .textSelection(.enabled)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .id("partial-anchor")
+                    }
                 }
-                .onChange(of: state.finalLines.count) {
-                    proxy.scrollTo("partial-anchor", anchor: .bottom)
-                }
-                .onChange(of: state.partialText) {
-                    proxy.scrollTo("partial-anchor", anchor: .bottom)
-                }
+                .padding(12)
+            }
+            .onChange(of: state.finalLines.count) {
+                proxy.scrollTo("partial-anchor", anchor: .bottom)
+            }
+            .onChange(of: state.partialText) {
+                proxy.scrollTo("partial-anchor", anchor: .bottom)
+            }
+            .onChange(of: state.statusLines.count) {
+                proxy.scrollTo("partial-anchor", anchor: .bottom)
             }
         }
     }
 
-    private var colorForStatus: Color {
-        let msg = state.statusMessage.lowercased()
-        if msg.hasPrefix("error") || msg.hasPrefix("fatal") {
+    private func colorForStatus(_ line: StatusLine) -> Color {
+        if line.isError {
             return .red
         }
-        if msg.contains("listening") {
+        if line.isActive {
             return .green
         }
         return .secondary
