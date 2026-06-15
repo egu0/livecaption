@@ -13,6 +13,45 @@ import queue
 import subprocess
 import threading
 from datetime import datetime
+from pathlib import Path
+
+
+class StatusLogger:
+    """Thread-safe append-only log of status and final events.
+
+    Writes timestamped lines to ``~/.tmp/livecaption.log`` so the
+    recognition stream is always persisted, even if the caption window is
+    closed abruptly (the file is flushed after every write).
+    """
+
+    def __init__(self, path: str = "~/.tmp/livecaption.log") -> None:
+        p = Path(path).expanduser()
+        p.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+        self._f = open(p, "a", encoding="utf-8")  # noqa: SIM115
+        self._lock = threading.Lock()
+
+    def log(self, obj: dict) -> None:
+        """Write a status or final event (thread-safe).  Partial events are
+        silently ignored."""
+        ts = datetime.now().strftime("%H:%M:%S")
+        kind = obj.get("type")
+        if kind == "status":
+            line = f"[{ts}] {obj['message']}\n"
+        elif kind == "final":
+            line = f"[{ts}] {obj['text']}\n"
+        else:
+            return
+        with self._lock:
+            if self._f.closed:
+                return
+            self._f.write(line)
+            self._f.flush()
+
+    def close(self) -> None:
+        with self._lock:
+            if not self._f.closed:
+                self._f.flush()
+            self._f.close()
 
 
 class SwiftCaptionWindow:
@@ -34,6 +73,7 @@ class SwiftCaptionWindow:
         self._stop_event = threading.Event()
         self._q: queue.Queue[str] = queue.Queue()
         self._writer: threading.Thread | None = None
+        self._logger = StatusLogger()
 
     # ---- Public API (callable from any thread) ----
 
@@ -80,6 +120,7 @@ class SwiftCaptionWindow:
     def close(self) -> None:
         """Request shutdown from another thread (signal handler or error callback)."""
         self._stop_event.set()
+        self._logger.close()
         if self._proc is not None:
             with contextlib.suppress(Exception):
                 self._proc.terminate()
@@ -92,6 +133,7 @@ class SwiftCaptionWindow:
 
     def _send(self, obj: dict) -> None:
         """Enqueue a JSON-line event (thread-safe)."""
+        self._logger.log(obj)
         line = json.dumps(obj, ensure_ascii=False) + "\n"
         self._q.put(line)
 
