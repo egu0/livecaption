@@ -43,6 +43,11 @@ class ColorTheme(StrEnum):
     dark = "dark"
 
 
+class AsrBackend(StrEnum):
+    nemotron = "nemotron"
+    qwen3 = "qwen3"
+
+
 def main(
     source: SourceKind = typer.Option(
         SourceKind.mic,
@@ -69,10 +74,23 @@ def main(
         help="Spoken language, e.g. en-us / English, ja-jp / Japanese ('auto' = model-detected; "
         "pass an invalid value to list all supported locales)",
     ),
+    asr_backend: AsrBackend = typer.Option(
+        AsrBackend.nemotron, "--asr-backend",
+        help="ASR engine: nemotron (English-strong, live word partials + diarization) | "
+        "qwen3 (strong Chinese via mlx-qwen3-asr; utterance-level diarization, no live word "
+        "partials; set --asr-lang to a name like Chinese; needs the [qwen] extra)",
+    ),
     diarize: bool = typer.Option(
         True, "--diarize/--no-diarize",
         help="Speaker diarization (Sortformer, up to 4 speakers): sentences are "
         "split per speaker and labeled S1/S2/…",
+    ),
+    qwen_word_diarize: bool | None = typer.Option(
+        None, "--qwen-word-diarize/--no-qwen-word-diarize",
+        help="qwen3 backend only: mid-sentence speaker split via the Qwen3-ForcedAligner model "
+        "(extra ~0.6B model + a per-utterance alignment pass). On by default with "
+        "--asr-backend qwen3; use --no-qwen-word-diarize for utterance-level. Needs --diarize. "
+        "Not valid for other backends",
     ),
     diff: bool = typer.Option(
         True, "--diff/--no-diff",
@@ -118,6 +136,15 @@ def main(
             console.print(f"[red]{e}[/red]")
             raise typer.Exit(1) from None
 
+    # --qwen-word-diarize is qwen3-only (it drives the Qwen3-ForcedAligner); reject it for
+    # other backends rather than silently ignoring it. None = not passed.
+    if asr_backend is not AsrBackend.qwen3 and qwen_word_diarize is not None:
+        console.print(
+            "[red]--qwen-word-diarize / --no-qwen-word-diarize only applies to "
+            "--asr-backend qwen3[/red]"
+        )
+        raise typer.Exit(1)
+
     # --- build audio sources ---
     need_system = source in (SourceKind.system, SourceKind.both)
     need_mic = source in (SourceKind.mic, SourceKind.both)
@@ -141,11 +168,37 @@ def main(
     # --- load and warm up the ASR + VAD (+ diarization) models (first run auto-downloads
     # from HF) ---
     try:
-        recognizer = build_recognizer(
-            asr_model, asr_lang, diarize,
-            log=lambda m: console.print(f"[dim]{m}[/dim]"),
-        )
-    except ValueError as e:
+        if asr_backend is AsrBackend.qwen3:
+            from .asr_qwen import build_qwen_recognizer
+
+            # default to the Qwen model unless the user explicitly overrode --asr-model
+            qwen_model = (
+                config.DEFAULT_QWEN_ASR_MODEL
+                if asr_model == config.DEFAULT_ASR_MODEL
+                else asr_model
+            )
+            # on by default for qwen3 (config.QWEN_WORD_DIARIZE); None = flag not passed
+            word_diarize = (
+                qwen_word_diarize
+                if qwen_word_diarize is not None
+                else config.QWEN_WORD_DIARIZE
+            )
+            if diarize and not word_diarize:
+                console.print(
+                    "[dim]Note: qwen3 diarization is utterance-level (one speaker per "
+                    "sentence). Drop --no-qwen-word-diarize for mid-sentence speaker splits "
+                    "(loads the Qwen3-ForcedAligner model).[/dim]"
+                )
+            recognizer = build_qwen_recognizer(
+                qwen_model, asr_lang, diarize, diarize and word_diarize,
+                log=lambda m: console.print(f"[dim]{m}[/dim]"),
+            )
+        else:
+            recognizer = build_recognizer(
+                asr_model, asr_lang, diarize,
+                log=lambda m: console.print(f"[dim]{m}[/dim]"),
+            )
+    except (ValueError, ImportError) as e:
         console.print(f"[red]{e}[/red]")
         raise typer.Exit(1) from None
     except KeyboardInterrupt:

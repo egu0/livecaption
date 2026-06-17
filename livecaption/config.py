@@ -41,6 +41,41 @@ ASR_ATT_CONTEXT = [56, 6]
 ASR_TWO_PASS = True
 ASR_FINAL_ATT_CONTEXT = [56, 13]
 
+# ---- ASR backend selection ----
+# "nemotron" (default): the streaming transducer above -- English-strong, live word-level
+#   partials, supports diarization + the two-pass inline diff.
+# "qwen3": Qwen3-ASR via the optional `mlx-qwen3-asr` package (install the [qwen] extra).
+#   Much stronger Chinese (+ Cantonese / code-switching), context-bias friendly. Its
+#   streaming path emits no token timestamps, so partials refresh per chunk
+#   (~QWEN_CHUNK_SIZE_SEC) rather than per word and carry no live speaker label; diarization
+#   is utterance-level by default (one speaker per sentence), upgraded to nemotron-style
+#   mid-sentence split only when QWEN_WORD_DIARIZE is on (see below).
+ASR_BACKEND = "nemotron"
+# fp16 ~4.7GB. For ~2.4GB use a locally-converted 8-bit dir (mlx-qwen3-asr's own converter);
+# the mlx-community/Qwen3-ASR-*-8bit repos are mlx-audio's and do NOT load in this package.
+DEFAULT_QWEN_ASR_MODEL = "Qwen/Qwen3-ASR-1.7B"
+QWEN_CHUNK_SIZE_SEC = 2.0  # rolling-decode chunk size ~= partial refresh granularity
+QWEN_MAX_CONTEXT_SEC = 30.0  # rolling context window (trimmed beyond this; linear cost)
+QWEN_FINALIZATION_MODE = "accuracy"  # "accuracy" (tail refine) | "latency"
+# two-pass: at finalization, re-decode the whole utterance OFFLINE (full context, no chunk
+# boundaries) and use that as the final + translation input -- fixes the spurious sentence
+# breaks the 2s-chunked rolling decode can insert mid-utterance. Partials still show the
+# streaming result; the inline diff highlights what the re-decode changed. Costs one full
+# re-decode per sentence (~0.5s at 0.6B, ~1.5s at 1.7B). Set False to skip.
+QWEN_TWO_PASS = True
+# Word-level diarization for the qwen3 backend (parity with nemotron's mid-sentence speaker
+# split). The Qwen3-ASR decoder emits no token timestamps, so we get them from the separate
+# Qwen3-ForcedAligner model: at finalization the offline re-decode is run with
+# return_timestamps=True, each aligned word is mapped to a Sortformer frame speaker, and the
+# text is sliced at speaker-change word boundaries into one final per speaker. On by default
+# (the qwen3 backend's diarization is only worth much with it), at the cost of a per-utterance
+# forced-alignment pass + an extra ~0.6B model (DEFAULT_QWEN_ALIGNER_MODEL). Disable with
+# --no-qwen-word-diarize to fall back to utterance-level (one speaker per sentence) -- the
+# alignment pass is pure overhead for mostly single-speaker stretches. Needs --diarize. This
+# flag is qwen3-only; passing it with another backend is an error.
+QWEN_WORD_DIARIZE = True
+DEFAULT_QWEN_ALIGNER_MODEL = "Qwen/Qwen3-ForcedAligner-0.6B"
+
 # ---- Speaker diarization (Sortformer v2.1 streaming; disable with --no-diarize) ----
 # At finalization the whole sentence is fed at once (the model's native operating point is 15s
 # chunks; feeding small streaming chunks makes speaker identity drift), then text is split and

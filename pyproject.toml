@@ -16,6 +16,13 @@ dependencies = [
     "huggingface-hub>=0.30",
 ]
 
+[project.optional-dependencies]
+# Qwen3-ASR backend (--asr-backend qwen3): strong Chinese, pure-MLX. Ground-up reimpl
+# (moona3k); its layer naming differs from mlx-audio, so the mlx-community/Qwen3-ASR-*-8bit
+# repos (mlx-audio's) do NOT load here -- use fp16 Qwen/Qwen3-ASR-* or its own converter.
+# Install with `uv sync --extra qwen`.
+qwen = ["mlx-qwen3-asr>=0.3.5"]
+
 [project.scripts]
 livecaption = "livecaption.cli:run"
 

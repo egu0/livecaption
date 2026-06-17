@@ -218,9 +218,10 @@ class Renderer:
                     "del": self._sty["diff_del"],
                     "add": self._sty["diff_add"],
                 }
-                for j, (kind, words) in enumerate(diff):
-                    if j:
-                        line.append(" ")
+                # spans are concatenated verbatim: _inline_diff bakes the spacing into each
+                # span (leading space for Latin words, none for CJK chars), so no separator
+                # here -- adding one would space out every Chinese character.
+                for kind, words in diff:
                     line.append(words, style=styles.get(kind, ""))
             else:
                 line.append(text, style=text_style)
@@ -256,9 +257,10 @@ class Renderer:
 
     def preview(self, label: str, zh_segments: list, started_at: datetime) -> None:
         """Live provisional translation of the in-progress utterance (P2): shown under the EN
-        partial, replaced by the final translation later. zh_segments = [(speaker, zh), ...]."""
+        partial, replaced by the final translation later. zh_segments = [(speaker, zh), ...].
+        Built timestamp-less (it lives in the live region directly under its EN line); the [ts]
+        is added only if/when it's committed (see _commit_locked / _zh_with_ts)."""
         line = Text()
-        line.append(f"[{started_at:%H:%M:%S}] ", style=self._sty["ts"])
         self._append_segments(
             line, [(spk, zh, None) for spk, zh in zh_segments], self._sty["translation"]
         )
@@ -310,23 +312,45 @@ class Renderer:
     def _print_translation(self, line: Text) -> None:
         # soft_wrap so the terminal hard-wraps the line itself. Chinese has no spaces, so rich's
         # word wrapper treats the whole translation as one giant unbreakable "word": when it
-        # doesn't fit after the speaker label it bumps the entire run to the next line before
-        # folding (looks like an empty "[ts] S1" line followed by the text). Letting the terminal
+        # doesn't fit after the timestamp it bumps the entire run to the next line before
+        # folding (looks like a lone "[ts]" line followed by the text). Letting the terminal
         # wrap it character by character -- which is how CJK wraps anyway -- keeps it on the same
-        # line as the label. (English keeps rich's nicer word wrapping; it has spaces.)
+        # line as the timestamp. (English keeps rich's nicer word wrapping; it has spaces.)
+        # NOTE: soft_wrap only works for committed (scrolled-up) lines, not the live region --
+        # the live region must fold so rich can track its height, and folding re-triggers the
+        # bump. That's why the live region renders the ZH timestamp-less (see _zh_with_ts).
         self._live.console.print(line, soft_wrap=True)
+
+    def _zh_with_ts(self, started_at: datetime, zh: Text) -> Text:
+        """Prefix a (timestamp-less) ZH line with its [ts]. The stored ZH carries no timestamp
+        so the live region folds it cleanly from column 0 (a timestamp there would get bumped
+        onto its own line, since the live region can't use soft_wrap -- see _print_translation);
+        committed lines get the [ts] back here and print via soft_wrap, keeping it glued."""
+        line = Text()
+        line.append(f"[{started_at:%H:%M:%S}] ", style=self._sty["ts"])
+        line.append_text(zh)
+        return line
+
+    def _commit_locked(self, entry: dict) -> None:
+        """Print a finalized EN/ZH pair to history (scrolls above the live region), in order.
+        Caller holds the lock. The ZH falls back to the provisional preview when its final
+        translation never arrived (height valve / shutdown)."""
+        self._live.console.print(entry["en"])
+        zh = entry["zh"] or entry["zh_preview"]
+        if zh is not None:
+            self._print_translation(self._zh_with_ts(entry["started_at"], zh))
 
     def translation(self, label: str, zh_segments: list, started_at: datetime) -> None:
         # zh_segments = [(speaker, zh_text), ...] mirrors the EN segments, so the ZH line carries
-        # the same inline [S1]/[S2] markers
+        # the same inline [S1]/[S2] markers. Built timestamp-less (live region renders it under
+        # its EN line); the [ts] is prepended at commit time (_commit_locked / _zh_with_ts).
         line = Text()
-        line.append(f"[{started_at:%H:%M:%S}] ", style=self._sty["ts"])
         self._append_segments(
             line, [(spk, zh, None) for spk, zh in zh_segments], self._sty["translation"]
         )
         with self._lock:
             if not self._translate:
-                self._print_translation(line)
+                self._print_translation(self._zh_with_ts(started_at, line))
                 return
             # attach this ZH to its buffered EN (matched by label + start time), then commit
             # completed pairs from the head so sentences stay in order even if an earlier
@@ -345,9 +369,7 @@ class Renderer:
                 # stray out-of-order line
                 return
             while self._pending and self._pending[0]["zh"] is not None:
-                done = self._pending.pop(0)
-                self._live.console.print(done["en"])
-                self._print_translation(done["zh"])
+                self._commit_locked(self._pending.pop(0))
             self._live.update(self._render_active())
 
     def _relieve_pending_locked(self) -> None:
@@ -356,21 +378,14 @@ class Renderer:
         (final, else the provisional preview) so the region can't grow until it fills the
         terminal. Caller holds the lock."""
         while len(self._pending) > _MAX_PENDING:
-            done = self._pending.pop(0)
-            self._live.console.print(done["en"])
-            zh = done["zh"] or done["zh_preview"]
-            if zh is not None:
-                self._print_translation(zh)
+            self._commit_locked(self._pending.pop(0))
 
     def _flush_pending_locked(self) -> None:
         """Commit every buffered final (with its ZH, else its provisional preview) in order.
         Caller holds the lock. Also stops buffering, so later finals print immediately -- used
         on shutdown and when translation is disabled mid-run (model failed to load)."""
         for entry in self._pending:
-            self._live.console.print(entry["en"])
-            zh = entry["zh"] or entry["zh_preview"]
-            if zh is not None:
-                self._print_translation(zh)
+            self._commit_locked(entry)
         self._pending.clear()
         self._translate = False
 
