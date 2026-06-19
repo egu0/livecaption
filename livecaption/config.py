@@ -5,13 +5,37 @@ All tunable parameters live here so they can be adjusted after real-world testin
 
 from __future__ import annotations
 
-# ---- Default models ----
-# ASR: mlx-audio runs the nemotron-3.5 streaming transducer (Apple GPU / MLX; ~1.2GB in bf16).
-# To save memory, switch to the 8bit quantized build
-# "mlx-community/nemotron-3.5-asr-streaming-0.6b-8bit".
-DEFAULT_ASR_MODEL = "mlx-community/nemotron-3.5-asr-streaming-0.6b"
-# Translation: Hy-MT2 (Tencent Hunyuan MT, 3rd gen) 1.8B 8bit, ~2GB memory
-DEFAULT_MT_MODEL = "mlx-community/Hy-MT2-1.8B-8bit"
+# ---- Model registries (the closed --asr-model / --mt-model choice lists) ----
+# Alias -> (ASR engine, HF repo id). The CLI exposes these aliases as a strict choice list and
+# derives the engine from the chosen alias -- there is no separate --asr-backend (see cli.py).
+#   nemotron: mlx-audio streaming transducer (English-strong, live word partials + diarization)
+#   qwen3:    Qwen3-ASR via the optional `mlx-qwen3-asr` package (strong Chinese; install [qwen])
+# The qwen3 *-8bit entries are our own conversions; the mlx-community/Qwen3-ASR-*-8bit repos use
+# mlx-audio's layer naming and do NOT load in mlx-qwen3-asr.
+ASR_MODELS: dict[str, tuple[str, str]] = {
+    "nemotron-0.6b":      ("nemotron", "mlx-community/nemotron-3.5-asr-streaming-0.6b"),
+    "nemotron-0.6b-8bit": ("nemotron", "mlx-community/nemotron-3.5-asr-streaming-0.6b-8bit"),
+    "qwen3-1.7b":         ("qwen3", "Qwen/Qwen3-ASR-1.7B"),
+    "qwen3-1.7b-8bit":    ("qwen3", "Six666/mlx-qwen3-asr-1.7b-8bit"),
+    "qwen3-0.6b":         ("qwen3", "Qwen/Qwen3-ASR-0.6B"),
+    "qwen3-0.6b-8bit":    ("qwen3", "Six666/mlx-qwen3-asr-0.6b-8bit"),
+}
+DEFAULT_ASR_MODEL_ALIAS = "nemotron-0.6b"
+
+# Translation: Hy-MT2 (Tencent Hunyuan MT, 3rd gen). 1.8B-8bit ~2GB (default); the 7B builds
+# (~4.2GB) translate more accurately. Alias -> HF repo id.
+MT_MODELS: dict[str, str] = {
+    "hy-mt2-1.8b-8bit": "mlx-community/Hy-MT2-1.8B-8bit",
+    "hy-mt2-1.8b-4bit": "mlx-community/Hy-MT2-1.8B-4bit",
+    "hy-mt2-7b-4bit":   "mlx-community/Hy-MT2-7B-4bit",
+    "hy-mt2-7b-8bit":   "mlx-community/Hy-MT2-7B-8bit",
+}
+DEFAULT_MT_MODEL_ALIAS = "hy-mt2-1.8b-8bit"
+
+# Kept for scripts that import them directly (smoke_asr / smoke_mel / smoke_translate /
+# spike_qwen3), bypassing the CLI enums. Derived so the registries stay the single source.
+DEFAULT_ASR_MODEL = ASR_MODELS[DEFAULT_ASR_MODEL_ALIAS][1]
+DEFAULT_MT_MODEL = MT_MODELS[DEFAULT_MT_MODEL_ALIAS]
 
 # ---- Audio ----
 SAMPLE_RATE = 16000  # ASR / VAD / audiotee all use 16k mono
@@ -41,19 +65,12 @@ ASR_ATT_CONTEXT = [56, 6]
 ASR_TWO_PASS = True
 ASR_FINAL_ATT_CONTEXT = [56, 13]
 
-# ---- ASR backend selection ----
-# "nemotron" (default): the streaming transducer above -- English-strong, live word-level
-#   partials, supports diarization + the two-pass inline diff.
-# "qwen3": Qwen3-ASR via the optional `mlx-qwen3-asr` package (install the [qwen] extra).
-#   Much stronger Chinese (+ Cantonese / code-switching), context-bias friendly. Its
-#   streaming path emits no token timestamps, so partials refresh per chunk
-#   (~QWEN_CHUNK_SIZE_SEC) rather than per word and carry no live speaker label; diarization
-#   is utterance-level by default (one speaker per sentence), upgraded to nemotron-style
-#   mid-sentence split only when QWEN_WORD_DIARIZE is on (see below).
-ASR_BACKEND = "nemotron"
-# fp16 ~4.7GB. For ~2.4GB use a locally-converted 8-bit dir (mlx-qwen3-asr's own converter);
-# the mlx-community/Qwen3-ASR-*-8bit repos are mlx-audio's and do NOT load in this package.
-DEFAULT_QWEN_ASR_MODEL = "Qwen/Qwen3-ASR-1.7B"
+# ---- qwen3 engine notes (selected via the qwen3-* aliases in ASR_MODELS above) ----
+# The qwen3 engine's streaming path emits no token timestamps, so partials refresh per chunk
+# (~QWEN_CHUNK_SIZE_SEC) rather than per word and carry no live speaker label; diarization is
+# utterance-level by default (one speaker per sentence), upgraded to nemotron-style
+# mid-sentence split only when QWEN_WORD_DIARIZE is on (see below). fp16 1.7B ~4.7GB; the
+# qwen3-*-8bit aliases ~2.4GB / ~1.0GB.
 QWEN_CHUNK_SIZE_SEC = 2.0  # rolling-decode chunk size ~= partial refresh granularity
 QWEN_MAX_CONTEXT_SEC = 30.0  # rolling context window (trimmed beyond this; linear cost)
 QWEN_FINALIZATION_MODE = "accuracy"  # "accuracy" (tail refine) | "latency"
