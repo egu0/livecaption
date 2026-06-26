@@ -109,6 +109,7 @@ class SwiftCaptionWindow:
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
             text=True,
+            start_new_session=True,
         )
         self._writer = threading.Thread(
             target=self._write_loop, daemon=True, name="swift-window-writer"

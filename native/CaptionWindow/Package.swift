@@ -11,6 +11,10 @@ let package = Package(
         .executableTarget(
             name: "CaptionWindow",
             path: "Sources/CaptionWindow"
+        ),
+        .testTarget(
+            name: "CaptionWindowTests",
+            dependencies: ["CaptionWindow"]
         )
     ]
 )

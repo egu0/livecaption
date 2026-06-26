@@ -31,6 +31,20 @@ from .swift_window import SwiftCaptionWindow
 os.environ.setdefault("HF_HUB_DISABLE_PROGRESS_BARS", "1")
 
 
+def install_sigint_hint_handler() -> None:
+    """Keep Ctrl-C from closing window mode, but explain the close gesture."""
+
+    def _on_signal(*_: object) -> None:
+        print(
+            "\nCtrl+C does not close the caption window. "
+            "Press Esc twice to close.",
+            file=sys.stderr,
+            flush=True,
+        )
+
+    signal.signal(signal.SIGINT, _on_signal)
+
+
 def main(
     asr_model: str = typer.Option(
         config.DEFAULT_ASR_MODEL, help="ASR model (HF id or local dir)"
@@ -56,18 +70,7 @@ def main(
     worker: AsrWorker | None = None
     source: SystemAudioSource | None = None
 
-    def _on_signal(*_: object) -> None:
-        """Ctrl-C in the terminal requests graceful shutdown."""
-        stop_event.set()
-        # Schedule Tk shutdown from the main thread; if the window is already gone,
-        # root.quit via after is harmless
-        if window is not None:
-            with contextlib.suppress(Exception):
-                window.close()
-        # Restore default handler: a second Ctrl-C force-exits
-        signal.signal(signal.SIGINT, signal.default_int_handler)
-
-    signal.signal(signal.SIGINT, _on_signal)
+    install_sigint_hint_handler()
 
     # ---- Phase 1: Resolve Swift window binary ----
     try:
@@ -134,8 +137,7 @@ def main(
     window.set_status("● Listening")
 
     # ---- Phase 7: Run until stop ----
-    # The window main loop blocks here. The window-close button sets stop_event
-    # and calls root.quit(), which unblocks mainloop.
+    # The window main loop blocks here until the native window exits.
     window.show()
 
     # ---- Phase 8: Cleanup ----

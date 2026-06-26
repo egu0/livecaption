@@ -188,7 +188,11 @@ class SystemAudioSource(AudioSource):
         for pid in self.include_pids:
             cmd += ["--include-processes", str(pid)]
         self._proc = subprocess.Popen(
-            cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, bufsize=0
+            cmd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            bufsize=0,
+            start_new_session=True,
         )
         # a wrong audiotee path / a crash makes it exit immediately; surface that early
         # instead of going silently dataless

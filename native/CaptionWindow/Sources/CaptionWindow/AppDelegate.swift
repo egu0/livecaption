@@ -6,6 +6,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     let state: CaptionState
     private var window: NSWindow?
     private var eventMonitor: Any?
+    private var escapeCloseGate = EscapeCloseGate(confirmInterval: 1.0)
 
     init(state: CaptionState) {
         self.state = state
@@ -80,10 +81,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         window.center()
         self.window = window
 
-        // ESC key → terminate
+        // ESC twice within the confirmation interval → terminate
         eventMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
             if event.keyCode == 53 {  // ESC
-                self?.window?.close()
+                if self?.escapeCloseGate.shouldClose(at: event.timestamp) == true {
+                    self?.window?.close()
+                }
                 return nil
             }
             return event

@@ -16,4 +16,5 @@ wheels/
 bin/
 .vendor/
 
-native/
+native/*
+!native/CaptionWindow/
