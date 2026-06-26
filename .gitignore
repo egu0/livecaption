@@ -12,3 +12,5 @@ wheels/
 # audiotee 编译产物（用 scripts/build_audiotee.sh 重建）
 bin/
 .vendor/
+
+native/
