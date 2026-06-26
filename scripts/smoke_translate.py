@@ -10,9 +10,15 @@ import threading
 from datetime import datetime
 
 from livecaption.config import DEFAULT_MT_MODEL, DEFAULT_TARGET_LANG
+from livecaption.languages import normalize_asr_language, normalize_target_language
 from livecaption.translate import Translator, _strip_boilerplate
 
 # ---- pure-logic checks first (no model): boilerplate stripping ----
+assert normalize_target_language("zh-cn").prompt_name == "Simplified Chinese"
+assert normalize_target_language("Chinese").code == "zh-cn"
+assert normalize_target_language("Japanese").prompt_name == "Japanese"
+assert normalize_asr_language("en-us", ["en-US", "de-DE"]) == "en-US"
+assert normalize_asr_language("German", ["en-US", "de-DE"]) == "de-DE"
 assert (
     _strip_boilerplate("根据提供的背景信息，以下是翻译后的中文内容：\n\n“你好，世界。”")
     == "你好，世界。"

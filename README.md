@@ -54,11 +54,14 @@ uv run livecaption --source system --context 0
 # 只转录不翻译
 uv run livecaption --source mic --no-translate
 
-# 翻成日语、换更大的翻译模型
-uv run livecaption --target-lang Japanese --mt-model mlx-community/Hy-MT2-7B-4bit
+# 翻成日语、换更大更准的翻译模型
+uv run livecaption --target-lang ja-jp --mt-model hy-mt2-7b-4bit
+
+# 中文 / 中英混说会议：换 Qwen3-ASR 引擎（需 `--extra qwen`），用 8bit 量化省显存
+uv run --extra qwen livecaption --asr-model qwen3-1.7b-8bit --asr-lang Chinese
 
 # 非英语会议：指定说话语言（40 个 locale，传错会列出全部可选值）
-uv run livecaption --asr-lang de-DE --target-lang Chinese
+uv run livecaption --asr-lang de-de --target-lang zh-cn
 
 # 只捕获某个 App（先用 `ps`/活动监视器拿到 Zoom 的 PID）
 uv run livecaption --source system --include-pid 12345
@@ -96,6 +99,22 @@ alias lc='cd ~/CodingSpace/projects/livecaption && uv run livecaption-window'
 
 **配色不清楚时**：默认 `--theme auto` 会尝试从 `COLORFGBG` 探测背景明暗，但多数 macOS 终端（Terminal/iTerm/VS Code）不设这个变量，探测不到就回退到“默认前景色 + 加粗”的保底方案（任何背景都和正文一样清楚，但译文不带专属颜色）。想要彩色译文就显式指定 `--theme light`（浅色背景，译文深青蓝）或 `--theme dark`（深色背景，译文亮青）。
 
+## 模型选择
+
+`--asr-model` 和 `--mt-model` 都是**固定列表**（传列表外的值会被拒并列出可选值）；ASR 引擎由所选模型自动决定，不再有单独的后端开关。
+
+**`--asr-model`**（默认 `nemotron-0.6b`）：
+
+| 别名 | 引擎 | 说明 |
+|---|---|---|
+| `nemotron-0.6b` / `nemotron-0.6b-8bit` | nemotron | 英文强、实时逐词 partial + 说话人分离；8bit 省显存 |
+| `qwen3-1.7b` / `qwen3-1.7b-8bit` | qwen3 | 中文 / 中英混说强（需 `--extra qwen`）；fp16 ~4.7GB，8bit ~2.4GB |
+| `qwen3-0.6b` / `qwen3-0.6b-8bit` | qwen3 | 更小更快的中文版；8bit ~1.0GB |
+
+**`--mt-model`**（默认 `hy-mt2-1.8b-8bit`）：`hy-mt2-1.8b-8bit`（~2GB）、`hy-mt2-1.8b-4bit`、`hy-mt2-7b-4bit`（~4.2GB，更准）、`hy-mt2-7b-8bit`。
+
+> qwen3 的 8bit 量化由本项目转换并发布在 HuggingFace：`Six666/mlx-qwen3-asr-1.7b-8bit`、`Six666/mlx-qwen3-asr-0.6b-8bit`。
+
 ## 权限
 
 - **麦克风**：首次运行系统弹窗，授权落在你的终端 App 上。
@@ -113,12 +132,12 @@ alias lc='cd ~/CodingSpace/projects/livecaption && uv run livecaption-window'
 
 ## 选型说明
 
-`nemotron-3.5-asr-streaming` 是 `nemotron-speech-streaming-en` 的官方多语言后继（同为 cache-aware 真流式，0.6B 参数预算不变），不是用滑窗模拟离线模型。运行时选 mlx-audio：MLX 原生跑 Apple GPU（sherpa-onnx 在 mac 上只能 CPU，CoreML 对流式 transducer 算子覆盖不全）。mlx-audio 只提供 pull 式接口，本项目把它的 streaming 内核改写成了 push 式实时 stepper（`asr.py`），端点检测由 Silero VAD 按 sherpa 的 rule1/2/3 语义重实现。语言固定 `en-US`，避免 auto 检测在混杂语流里跳变。
+`nemotron-3.5-asr-streaming` 是 `nemotron-speech-streaming-en` 的官方多语言后继（同为 cache-aware 真流式，0.6B 参数预算不变），不是用滑窗模拟离线模型。运行时选 mlx-audio：MLX 原生跑 Apple GPU（sherpa-onnx 在 mac 上只能 CPU，CoreML 对流式 transducer 算子覆盖不全）。mlx-audio 只提供 pull 式接口，本项目把它的 streaming 内核改写成了 push 式实时 stepper（`asr.py`），端点检测由 Silero VAD 按 sherpa 的 rule1/2/3 语义重实现。默认说话语言是 `en-us`（内部映射到模型的 `en-US` key），避免 auto 检测在混杂语流里跳变。语言参数同时支持小写短代码和英文语言名，如 `zh-cn` / `Chinese`、`ja-jp` / `Japanese`、`de-de` / `German`。
 
 ## 已知风险与退路
 
 - ASR 流式质量不满意 → 调大 `ASR_ATT_CONTEXT`（如 `[56,13]`，精度最好但 1.12s 一刷、partial 延迟更大）。
 - ASR 与翻译同抢 GPU 出现卡顿 → 翻译换更小 / 更低精度的模型，`--no-diarize` 关掉说话人分离，或 `--no-translate` 只转录，让 ASR 独占 GPU。
-- 显存吃紧 → ASR 换 8bit 量化版 `--asr-model mlx-community/nemotron-3.5-asr-streaming-0.6b-8bit`。
-- 翻译质量不够 → `--mt-model mlx-community/Hy-MT2-7B-4bit`（约 4.2GB，更准）。
+- 显存吃紧 → ASR 换 8bit 量化版 `--asr-model nemotron-0.6b-8bit`（或 qwen3 用 `qwen3-1.7b-8bit` / `qwen3-0.6b-8bit`）。
+- 翻译质量不够 → `--mt-model hy-mt2-7b-4bit`（约 4.2GB，更准）。
 - 单独 tap 某个 App 偶发静音 → 默认 tap 全系统输出更稳（不传 `--include-pid`）。

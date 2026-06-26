@@ -19,6 +19,7 @@ from rich.console import Console
 from . import config
 from .asr import AsrWorker, build_recognizer
 from .audio import AudioSource, FileSource, MicSource, SystemAudioSource
+from .languages import normalize_target_language
 from .models import resolve_audiotee
 from .render import FileWriter, Renderer
 from .translate import Translator
@@ -42,63 +43,116 @@ class ColorTheme(StrEnum):
     dark = "dark"
 
 
+class AsrModel(StrEnum):
+    nemotron_0_6b = "nemotron-0.6b"
+    nemotron_0_6b_8bit = "nemotron-0.6b-8bit"
+    qwen3_1_7b = "qwen3-1.7b"
+    qwen3_1_7b_8bit = "qwen3-1.7b-8bit"
+    qwen3_0_6b = "qwen3-0.6b"
+    qwen3_0_6b_8bit = "qwen3-0.6b-8bit"
+
+
+class MtModel(StrEnum):
+    hy_mt2_1_8b_8bit = "hy-mt2-1.8b-8bit"
+    hy_mt2_1_8b_4bit = "hy-mt2-1.8b-4bit"
+    hy_mt2_7b_4bit = "hy-mt2-7b-4bit"
+    hy_mt2_7b_8bit = "hy-mt2-7b-8bit"
+
+
+# CLI choice values must stay in lockstep with the config registries (single source of truth).
+assert {m.value for m in AsrModel} == set(config.ASR_MODELS)
+assert {m.value for m in MtModel} == set(config.MT_MODELS)
+
+# Resolve defaults once at module level (typer arg defaults must not call functions -- B008).
+_DEFAULT_ASR_MODEL = AsrModel(config.DEFAULT_ASR_MODEL_ALIAS)
+_DEFAULT_MT_MODEL = MtModel(config.DEFAULT_MT_MODEL_ALIAS)
+
+
 def main(
+    # --- Audio & input ---
     source: SourceKind = typer.Option(
-        SourceKind.mic,
-        help="Audio source: mic / system (meeting output) / both (dual-track) / file",
+        SourceKind.mic, rich_help_panel="Audio & input",
+        help="mic / system (meeting output) / both (dual-track) / file",
     ),
     audio_file: Path | None = typer.Option(
-        None, "--file", "-f",
+        None, "--file", "-f", rich_help_panel="Audio & input",
         help="Audio file to transcribe (with --source file); wav/mp3/m4a, any sample rate",
     ),
-    out: Path | None = typer.Option(
-        None, "--out", "-o",
-        help="Transcript file path (default: timestamped file under ~/.cache/livecaption)",
+    mic_device: str | None = typer.Option(
+        None, rich_help_panel="Audio & input", help="Microphone device name or index",
     ),
-    translate: bool = typer.Option(
-        True, "--translate/--no-translate", help="Enable translation"
+    include_pid: int | None = typer.Option(
+        None, rich_help_panel="Audio & input",
+        help="Capture only this process PID's audio (e.g. Zoom's PID)",
     ),
-    target_lang: str = typer.Option(
-        config.DEFAULT_TARGET_LANG, help="Translation target language"
+    audiotee: str | None = typer.Option(
+        None, rich_help_panel="Audio & input", help="Path to the audiotee binary (system source)",
     ),
-    asr_model: str = typer.Option(config.DEFAULT_ASR_MODEL, help="ASR model (HF id or local dir)"),
+    list_devices: bool = typer.Option(
+        False, rich_help_panel="Audio & input", help="List audio input devices and exit",
+    ),
+    # --- ASR ---
+    asr_model: AsrModel = typer.Option(
+        _DEFAULT_ASR_MODEL, "--asr-model", metavar="MODEL", show_choices=False,
+        rich_help_panel="ASR",
+        help="Engine auto-derived from the choice. English: nemotron-0.6b, nemotron-0.6b-8bit. "
+        "Chinese (needs the \\[qwen] extra): qwen3-1.7b, qwen3-1.7b-8bit, qwen3-0.6b, "
+        "qwen3-0.6b-8bit",
+    ),
     asr_lang: str = typer.Option(
-        config.ASR_LANGUAGE, "--asr-lang",
-        help="Spoken language locale, e.g. en-US, ja-JP, de-DE ('auto' = model-detected; "
+        config.ASR_LANGUAGE, "--asr-lang", rich_help_panel="ASR",
+        help="Spoken language, e.g. en-us / English, ja-jp / Japanese ('auto' = model-detected; "
         "pass an invalid value to list all supported locales)",
     ),
     diarize: bool = typer.Option(
-        True, "--diarize/--no-diarize",
+        True, "--diarize/--no-diarize", rich_help_panel="ASR",
         help="Speaker diarization (Sortformer, up to 4 speakers): sentences are "
         "split per speaker and labeled S1/S2/…",
     ),
-    diff: bool = typer.Option(
-        True, "--diff/--no-diff",
-        help="Render final-pass corrections inline: corrected-away words struck "
-        "through in red, new words in green",
+    qwen_word_diarize: bool | None = typer.Option(
+        None, "--qwen-word-diarize/--no-qwen-word-diarize", rich_help_panel="ASR",
+        help="qwen3 models only: mid-sentence speaker split via the Qwen3-ForcedAligner model "
+        "(extra ~0.6B model + a per-utterance alignment pass). On by default with a qwen3-* "
+        "--asr-model; use --no-qwen-word-diarize for utterance-level. Needs --diarize",
     ),
-    theme: ColorTheme = typer.Option(
-        ColorTheme.auto, "--theme",
-        help="Terminal color theme: auto (detect background via COLORFGBG, else "
-        "fall back to a high-contrast default) / light / dark",
+    # --- Translation ---
+    translate: bool = typer.Option(
+        True, "--translate/--no-translate", rich_help_panel="Translation",
+        help="Enable translation",
     ),
-    mem: bool = typer.Option(
-        False, "--mem",
-        help="Show MLX unified-memory usage (active/cache/peak) in the bottom status line",
+    target_lang: str = typer.Option(
+        config.DEFAULT_TARGET_LANG, rich_help_panel="Translation",
+        help="Translation target language, e.g. zh-cn / Chinese, ja-jp / Japanese",
     ),
-    mt_model: str = typer.Option(
-        config.DEFAULT_MT_MODEL, help="Translation model (HF id or local dir)"
+    mt_model: MtModel = typer.Option(
+        _DEFAULT_MT_MODEL, "--mt-model", metavar="MODEL", show_choices=False,
+        rich_help_panel="Translation",
+        help="hy-mt2-1.8b-8bit (default, ~2GB), hy-mt2-1.8b-4bit, "
+        "hy-mt2-7b-4bit (~4.2GB, more accurate), hy-mt2-7b-8bit",
     ),
     context: int = typer.Option(
-        config.MT_CONTEXT_SENTENCES,
+        config.MT_CONTEXT_SENTENCES, rich_help_panel="Translation",
         help="Prior sentences passed as translation context (0=off; try 2-3)",
     ),
-    audiotee: str | None = typer.Option(None, help="Path to the audiotee binary (system source)"),
-    include_pid: int | None = typer.Option(
-        None, help="Capture only this process PID's audio (e.g. Zoom's PID)"
+    # --- Output & display ---
+    out: Path | None = typer.Option(
+        None, "--out", "-o", rich_help_panel="Output & display",
+        help="Transcript file path (default: timestamped file under ~/.cache/livecaption)",
     ),
-    mic_device: str | None = typer.Option(None, help="Microphone device name or index"),
-    list_devices: bool = typer.Option(False, help="List audio input devices and exit"),
+    theme: ColorTheme = typer.Option(
+        ColorTheme.auto, "--theme", rich_help_panel="Output & display",
+        help="Color theme: auto (detect background via COLORFGBG, else high-contrast default) "
+        "/ light / dark",
+    ),
+    diff: bool = typer.Option(
+        True, "--diff/--no-diff", rich_help_panel="Output & display",
+        help="Render final-pass corrections inline: corrected-away words struck "
+        "through in grey, new words in green",
+    ),
+    mem: bool = typer.Option(
+        False, "--mem", rich_help_panel="Output & display",
+        help="Show MLX unified-memory usage (active/cache/peak) in the bottom status line",
+    ),
 ) -> None:
     console = Console()
 
@@ -107,6 +161,27 @@ def main(
 
         console.print(sd.query_devices())
         raise typer.Exit()
+
+    target_language = None
+    if translate:
+        try:
+            target_language = normalize_target_language(target_lang)
+        except ValueError as e:
+            console.print(f"[red]{e}[/red]")
+            raise typer.Exit(1) from None
+
+    # Resolve the chosen aliases to (engine, model id); the engine drives the ASR branch below.
+    backend_name, asr_model_id = config.ASR_MODELS[asr_model.value]
+    mt_model_id = config.MT_MODELS[mt_model.value]
+
+    # --qwen-word-diarize is qwen3-only (it drives the Qwen3-ForcedAligner); reject it for the
+    # nemotron engine rather than silently ignoring it. None = not passed.
+    if backend_name != "qwen3" and qwen_word_diarize is not None:
+        console.print(
+            "[red]--qwen-word-diarize / --no-qwen-word-diarize only applies to a qwen3-* "
+            "--asr-model[/red]"
+        )
+        raise typer.Exit(1)
 
     # --- build audio sources ---
     need_system = source in (SourceKind.system, SourceKind.both)
@@ -131,11 +206,31 @@ def main(
     # --- load and warm up the ASR + VAD (+ diarization) models (first run auto-downloads
     # from HF) ---
     try:
-        recognizer = build_recognizer(
-            asr_model, asr_lang, diarize,
-            log=lambda m: console.print(f"[dim]{m}[/dim]"),
-        )
-    except ValueError as e:
+        if backend_name == "qwen3":
+            from .asr_qwen import build_qwen_recognizer
+
+            # on by default for qwen3 (config.QWEN_WORD_DIARIZE); None = flag not passed
+            word_diarize = (
+                qwen_word_diarize
+                if qwen_word_diarize is not None
+                else config.QWEN_WORD_DIARIZE
+            )
+            if diarize and not word_diarize:
+                console.print(
+                    "[dim]Note: qwen3 diarization is utterance-level (one speaker per "
+                    "sentence). Drop --no-qwen-word-diarize for mid-sentence speaker splits "
+                    "(loads the Qwen3-ForcedAligner model).[/dim]"
+                )
+            recognizer = build_qwen_recognizer(
+                asr_model_id, asr_lang, diarize, diarize and word_diarize,
+                log=lambda m: console.print(f"[dim]{m}[/dim]"),
+            )
+        else:
+            recognizer = build_recognizer(
+                asr_model_id, asr_lang, diarize,
+                log=lambda m: console.print(f"[dim]{m}[/dim]"),
+            )
+    except (ValueError, ImportError) as e:
         console.print(f"[red]{e}[/red]")
         raise typer.Exit(1) from None
     except KeyboardInterrupt:
@@ -190,15 +285,15 @@ def main(
         translator: Translator | None = None
         if translate:
             translator = Translator(
-                mt_model,
-                target_lang,
+                mt_model_id,
+                target_language.prompt_name if target_language else target_lang,
                 on_translation=handle_translation,
                 on_ready=lambda: console.print("[dim]Translation model ready.[/dim]"),
                 on_failed=handle_translation_disabled,
                 on_preview=handle_preview,
                 context_size=context,
             )
-            console.print(f"[dim]Loading translation model {mt_model} …[/dim]")
+            console.print(f"[dim]Loading translation model {mt_model_id} …[/dim]")
             translator.start()
 
         # words already covered by the last live-preview translation, per source (debounce state)

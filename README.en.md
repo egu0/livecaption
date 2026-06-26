@@ -51,11 +51,14 @@ uv run livecaption --source system --context 0
 # Transcribe only, no translation
 uv run livecaption --source mic --no-translate
 
-# Translate to Japanese, switch to a larger translation model
-uv run livecaption --target-lang Japanese --mt-model mlx-community/Hy-MT2-7B-4bit
+# Translate to Japanese, switch to a larger, more accurate translation model
+uv run livecaption --target-lang ja-jp --mt-model hy-mt2-7b-4bit
+
+# Chinese / code-switching meeting: switch to the Qwen3-ASR engine (needs `--extra qwen`), 8bit to save memory
+uv run --extra qwen livecaption --asr-model qwen3-1.7b-8bit --asr-lang Chinese
 
 # Non-English meeting: specify the spoken language (40 locales; an invalid value lists all options)
-uv run livecaption --asr-lang de-DE --target-lang Chinese
+uv run livecaption --asr-lang de-de --target-lang zh-cn
 
 # Capture a single app only (first get Zoom's PID via `ps` / Activity Monitor)
 uv run livecaption --source system --include-pid 12345
@@ -75,6 +78,22 @@ In the terminal: the gray line at the bottom is the live intermediate result; fi
 
 **When colors are hard to read**: the default `--theme auto` tries to detect background lightness from `COLORFGBG`, but most macOS terminals (Terminal/iTerm/VS Code) don't set this variable, so when detection fails it falls back to a "default foreground color + bold" safe scheme (clear against any background, just as readable as the body text, but the translation gets no dedicated color). For colored translations, specify `--theme light` (light background, translation in dark teal-blue) or `--theme dark` (dark background, translation in bright cyan) explicitly.
 
+## Model selection
+
+`--asr-model` and `--mt-model` are **closed choice lists** (an out-of-list value is rejected and the valid options are printed); the ASR engine is derived from the chosen model — there is no separate backend switch.
+
+**`--asr-model`** (default `nemotron-0.6b`):
+
+| Alias | Engine | Notes |
+|---|---|---|
+| `nemotron-0.6b` / `nemotron-0.6b-8bit` | nemotron | English-strong, live word-level partials + diarization; 8bit saves memory |
+| `qwen3-1.7b` / `qwen3-1.7b-8bit` | qwen3 | Strong Chinese / code-switching (needs `--extra qwen`); fp16 ~4.7GB, 8bit ~2.4GB |
+| `qwen3-0.6b` / `qwen3-0.6b-8bit` | qwen3 | Smaller, faster Chinese variant; 8bit ~1.0GB |
+
+**`--mt-model`** (default `hy-mt2-1.8b-8bit`): `hy-mt2-1.8b-8bit` (~2GB), `hy-mt2-1.8b-4bit`, `hy-mt2-7b-4bit` (~4.2GB, more accurate), `hy-mt2-7b-8bit`.
+
+> The qwen3 8bit builds were converted and published by this project on HuggingFace: `Six666/mlx-qwen3-asr-1.7b-8bit`, `Six666/mlx-qwen3-asr-0.6b-8bit`.
+
 ## Permissions
 
 - **Microphone**: the system prompts on first run, and the grant is attached to your terminal app.
@@ -92,12 +111,12 @@ In the terminal: the gray line at the bottom is the live intermediate result; fi
 
 ## Design Rationale
 
-`nemotron-3.5-asr-streaming` is the official multilingual successor to `nemotron-speech-streaming-en` (likewise a cache-aware, truly streaming model, with the same 0.6B parameter budget), not an offline model simulated via a sliding window. mlx-audio was chosen as the runtime: MLX runs natively on the Apple GPU (sherpa-onnx is CPU-only on Mac, and CoreML's operator coverage for streaming transducers is incomplete). mlx-audio only offers a pull-style interface, so this project rewrote its streaming core into a push-style real-time stepper (`asr.py`), and endpointing is reimplemented on top of Silero VAD following sherpa's rule1/2/3 semantics. The language is pinned to `en-US` to avoid auto-detection jumping around in mixed-language speech.
+`nemotron-3.5-asr-streaming` is the official multilingual successor to `nemotron-speech-streaming-en` (likewise a cache-aware, truly streaming model, with the same 0.6B parameter budget), not an offline model simulated via a sliding window. mlx-audio was chosen as the runtime: MLX runs natively on the Apple GPU (sherpa-onnx is CPU-only on Mac, and CoreML's operator coverage for streaming transducers is incomplete). mlx-audio only offers a pull-style interface, so this project rewrote its streaming core into a push-style real-time stepper (`asr.py`), and endpointing is reimplemented on top of Silero VAD following sherpa's rule1/2/3 semantics. The default spoken language is `en-us` (resolved internally to the model's `en-US` key) to avoid auto-detection jumping around in mixed-language speech. Language options accept both lowercase short tags and English language names, such as `zh-cn` / `Chinese`, `ja-jp` / `Japanese`, and `de-de` / `German`.
 
 ## Known Risks and Fallbacks
 
 - Unsatisfied with streaming ASR quality → increase `ASR_ATT_CONTEXT` (e.g. `[56,13]`, best accuracy but refreshes every 1.12s, with higher partial latency).
 - ASR and translation contending for the GPU causing stutter → switch translation to a smaller / lower-precision model, disable diarization with `--no-diarize`, or transcribe only with `--no-translate` to let ASR have the GPU to itself.
-- Memory pressure → use the 8bit-quantized ASR build: `--asr-model mlx-community/nemotron-3.5-asr-streaming-0.6b-8bit`.
-- Translation quality not good enough → `--mt-model mlx-community/Hy-MT2-7B-4bit` (~4.2GB, more accurate).
+- Memory pressure → use an 8bit-quantized ASR build: `--asr-model nemotron-0.6b-8bit` (or for qwen3, `qwen3-1.7b-8bit` / `qwen3-0.6b-8bit`).
+- Translation quality not good enough → `--mt-model hy-mt2-7b-4bit` (~4.2GB, more accurate).
 - Occasional silence when tapping a single app → tapping the entire system output is more reliable by default (don't pass `--include-pid`).

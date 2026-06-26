@@ -10,7 +10,9 @@ from livecaption.asr import _inline_diff
 
 
 def words(spans: list[tuple[str, str]], kinds: set[str]) -> str:
-    return " ".join(w for k, w in spans if k in kinds)
+    # span text now carries its own leading whitespace (verbatim concatenation), so join
+    # with no separator and strip for comparison.
+    return "".join(w for k, w in spans if k in kinds).strip()
 
 
 # 1. No correction at all → every segment is None
@@ -61,5 +63,20 @@ spans = _inline_diff("i red a book.", ["i read a book?"])[0]
 assert spans is not None
 assert words(spans, {"del"}) == "red"
 assert words(spans, {"same", "add"}) == "i read a book?"
+
+# 9. CJK: no word boundaries, so characters diff individually. A spurious chunk-boundary
+#    period (the qwen3 two-pass scenario) shows as one struck deletion; same+add reassembles
+#    the corrected text with no spurious spaces between Chinese characters.
+spans = _inline_diff("甚至出现交易。几乎停滞", ["甚至出现交易几乎停滞"])[0]
+assert spans is not None
+assert words(spans, {"same", "add"}) == "甚至出现交易几乎停滞", spans
+assert words(spans, {"del"}) == "。", spans
+
+# 10. Mixed CJK + Latin: Latin stays whole words (with spaces), CJK stays per-char, and a
+#     Latin-word correction shows while the surrounding text reassembles verbatim.
+spans = _inline_diff("用 GPU 跑 trainning", ["用 GPU 跑 training"])[0]
+assert spans is not None
+assert words(spans, {"same", "add"}) == "用 GPU 跑 training", spans
+assert words(spans, {"del"}) == "trainning", spans
 
 print("inline diff smoke test PASSED")
